@@ -3,16 +3,16 @@
 # =====================================================================
 
 # Link to the FIRST issue you want. Format: https://batcave.biz/reader/<series id>/<issue id>
-START_URL = "https://batcave.biz/reader/9264/60124"
+START_URL = "" #ex: https://batcave.biz/reader/9264/60124
 START_ISSUE = 1          # number used for the first file (LongHalloween_001)
 END_ISSUE = 4       # last issue number to download
 
 # Where the files are saved:  FINAL_ROOT \ SUB_PATH \ FOLDER_NAME \ FILENAME_PREFIX_001.cbz
 FINAL_ROOT = "finalcomics"
 SUB_PATH = ""              # set to "" to skip this level
-FOLDER_NAME = "testNew"
-FILENAME_PREFIX = "tets"
-ARCHIVE_EXT = ".cbz"             # ZIP comic archive; works in Calibre and ComicsPlusPlus
+FOLDER_NAME = ""
+FILENAME_PREFIX = ""
+ARCHIVE_EXT = ".cbz"            # ZIP comic archive; works in Calibre and ComicsPlusPlus
 
 
 # =====================================================================
