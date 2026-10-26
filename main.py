@@ -310,3 +310,6 @@ if __name__ == "__main__":
         page.close()   # leaves your Chrome window open
         if not USE_MY_CHROME:
             browser.close()
+
+if __name__ == "__main__":
+    subprocess.run()
