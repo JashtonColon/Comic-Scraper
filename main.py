@@ -3,16 +3,16 @@
 # =====================================================================
 
 # Link to the FIRST issue you want. Format: https://batcave.biz/reader/<series id>/<issue id>
-START_URL = "" #ex: https://batcave.biz/reader/9264/60124
+START_URL = "https://batcave.biz/reader/9264/60124"
 START_ISSUE = 1          # number used for the first file (LongHalloween_001)
-END_ISSUE = 4       # last issue number to download
+END_ISSUE = 4            # last issue number to download
 
 # Where the files are saved:  FINAL_ROOT \ SUB_PATH \ FOLDER_NAME \ FILENAME_PREFIX_001.cbz
 FINAL_ROOT = "finalcomics"
-SUB_PATH = ""              # set to "" to skip this level
-FOLDER_NAME = ""
-FILENAME_PREFIX = ""
-ARCHIVE_EXT = ".cbz"            # ZIP comic archive; works in Calibre and ComicsPlusPlus
+SUB_PATH = "Batman"              # set to "" to skip this level
+FOLDER_NAME = "Long Halloween"
+FILENAME_PREFIX = "LongHalloween"
+ARCHIVE_EXT = ".cbz"             # ZIP comic archive; works in Calibre and ComicsPlusPlus
 
 
 # =====================================================================
@@ -133,6 +133,8 @@ def collect_image_urls(page, url, first_load=False):
             print(f"   ⚠️ Stopped flipping at {len(found)}/{total} pages")
             break
 
+        if STOP_REQUESTED:
+            break
         turn_page(page, data["active"])
         time.sleep(STEP_DELAY)
 
@@ -263,12 +265,23 @@ def process_issue(issue_num, series_id, start_issue_id, page, context, user_agen
     return f"✅ Issue {issue_num} saved (Pages: {len(valid_pages)}{note})"
 
 
-if __name__ == "__main__":
+STOP_REQUESTED = False   # the app window sets this to stop after the current issue
+
+
+def run():
+    """Run a full scrape using the settings at the top of this file (or the ones the app set)."""
+    global STOP_REQUESTED
+    STOP_REQUESTED = False
     print(f"📡 Starting Scrape. Nested Path: {os.path.join(FINAL_ROOT, SUB_PATH or '', FOLDER_NAME)}")
 
-    parts = START_URL.split("#")[0].strip("/").split("/")
-    start_issue_id = int(parts[-1])
-    series_id = parts[-2]
+    try:
+        parts = START_URL.split("#")[0].split("?")[0].strip().strip("/").split("/")
+        start_issue_id = int(parts[-1])
+        series_id = parts[-2]
+    except (ValueError, IndexError):
+        print(f"❌ That link doesn't look right: {START_URL}")
+        print("   It should look like https://batcave.biz/reader/9264/60124")
+        return
 
     with sync_playwright() as p:
         if USE_MY_CHROME:
@@ -278,8 +291,8 @@ if __name__ == "__main__":
                 browser = p.chromium.connect_over_cdp(f"http://localhost:{DEBUG_PORT}")
             except Exception:
                 if not os.path.exists(CHROME_PATH):
-                    print(f"❌ Chrome not found at {CHROME_PATH} - fix CHROME_PATH at the top of main.py")
-                    raise SystemExit(1)
+                    print(f"❌ Chrome not found at {CHROME_PATH} - fix the Chrome location in Settings")
+                    return
                 print("🚀 Opening Chrome... if you see a 'verify you are human' check, click it.")
                 subprocess.Popen([CHROME_PATH, f"--remote-debugging-port={DEBUG_PORT}",
                                   f"--user-data-dir={CHROME_PROFILE}", SITE_URL + "/"])
@@ -292,7 +305,7 @@ if __name__ == "__main__":
                         pass
                 if browser is None:
                     print("❌ Chrome opened but the script couldn't connect. Close ALL Chrome windows and try again.")
-                    raise SystemExit(1)
+                    return
             context = browser.contexts[0]
         else:
             browser = p.chromium.launch(channel="chrome", headless=HEADLESS,
@@ -304,12 +317,17 @@ if __name__ == "__main__":
 
         first = True
         for issue in range(START_ISSUE, END_ISSUE + 1):
+            if STOP_REQUESTED:
+                print("⏹️  Stopped by user")
+                break
             print(process_issue(issue, series_id, start_issue_id, page, context, user_agent, first))
             first = False
 
         page.close()   # leaves your Chrome window open
         if not USE_MY_CHROME:
             browser.close()
+    print("🏁 Done")
+
 
 if __name__ == "__main__":
-    subprocess.run()
+    run()
