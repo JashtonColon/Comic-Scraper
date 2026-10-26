@@ -1,3 +1,53 @@
+# =====================================================================
+#  WHAT TO DOWNLOAD  -  change these for each comic run
+# =====================================================================
+
+# Link to the FIRST issue you want. Format: https://batcave.biz/reader/<series id>/<issue id>
+START_URL = "https://batcave.biz/reader/9264/60124"
+START_ISSUE = 1          # number used for the first file (LongHalloween_001)
+END_ISSUE = 4       # last issue number to download
+
+# Where the files are saved:  FINAL_ROOT \ SUB_PATH \ FOLDER_NAME \ FILENAME_PREFIX_001.cbz
+FINAL_ROOT = "finalcomics"
+SUB_PATH = ""              # set to "" to skip this level
+FOLDER_NAME = "testNew"
+FILENAME_PREFIX = "tets"
+ARCHIVE_EXT = ".cbz"             # ZIP comic archive; works in Calibre and ComicsPlusPlus
+
+
+# =====================================================================
+#  CHROME SETUP  -  set once for your computer, then leave alone
+# =====================================================================
+
+# Where Chrome is installed. Other common spot:
+#   C:\Program Files (x86)\Google\Chrome\Application\chrome.exe
+CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+
+# Separate Chrome profile the scraper uses (keeps your Cloudflare pass between runs)
+CHROME_PROFILE = r"C:\chrome-scraper"
+
+USE_MY_CHROME = True     # True = open/reuse that normal Chrome window (gets past Cloudflare)
+DEBUG_PORT = 9222        # only change if something else uses this port
+HEADLESS = False         # only used when USE_MY_CHROME = False
+
+
+# =====================================================================
+#  ADVANCED  -  usually no need to touch
+# =====================================================================
+
+SITE_URL = "https://batcave.biz"
+PAGE_WORKERS = 8         # parallel image downloads per issue
+STEP_DELAY = 0.3         # seconds between page turns (lower = faster)
+MAX_STALLS = 8           # give up flipping after this many turns with no progress
+JPEG_QUALITY = 92        # quality when converting WebP/AVIF pages to JPEG
+DEBUG_SCREENSHOT = "debug_stuck.png"
+DEBUG_HTML = "debug_stuck.html"
+
+
+# =====================================================================
+#  CODE BELOW  -  no settings past this line
+# =====================================================================
+
 import io
 import os
 import subprocess
@@ -7,33 +57,6 @@ import requests
 from concurrent.futures import ThreadPoolExecutor
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
-# --- CONFIGURATION ---
-FINAL_ROOT = "finalcomics"
-SUB_PATH = ""
-FOLDER_NAME = "testNew"
-FILENAME_PREFIX = "test"
-ARCHIVE_EXT = ".cbz"   # DONT TOUCH
-
-
-# Link to the FIRST issue you want (series id / issue id)
-START_URL = "https://batcave.biz/reader/9264/60124"
-START_ISSUE = 5
-END_ISSUE = 6
-
-# --- BROWSER SETTINGS ---
-# USE_MY_CHROME = True: the script opens (or reuses) a normal Chrome window with its own
-# profile and attaches to it, which gets past Cloudflare. Leave that window open between
-# runs so you only pass the "verify you are human" check once.
-USE_MY_CHROME = True
-CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"  #CHANGE THIS 
-CHROME_PROFILE = r"C:\chrome-scraper"
-DEBUG_PORT = 9222
-HEADLESS = False       # only used when USE_MY_CHROME = False
-
-# --- SPEED SETTINGS ---
-PAGE_WORKERS = 8       # parallel image downloads per issue
-STEP_DELAY = 0.3       # seconds between page turns
-MAX_STALLS = 8         # give up flipping after this many turns with no progress
 
 # Reads every page slot in the reader and whatever image URL it currently has
 COLLECT_JS = """
@@ -83,11 +106,11 @@ def collect_image_urls(page, url, first_load=False):
         page.wait_for_selector(".reader__item-wrap, img.reader__item",
                                timeout=90000 if first_load else 45000)
     except PWTimeout:
-        page.screenshot(path="debug_stuck.png", full_page=True)
-        with open("debug_stuck.html", "w", encoding="utf-8") as f:
+        page.screenshot(path=DEBUG_SCREENSHOT, full_page=True)
+        with open(DEBUG_HTML, "w", encoding="utf-8") as f:
             f.write(page.content())
         print(f"   📸 Reader didn't load. Page title: '{page.title()}'")
-        print("   📸 Saved debug_stuck.png and debug_stuck.html - send them to Claude")
+        print(f"   📸 Saved {DEBUG_SCREENSHOT} and {DEBUG_HTML} - send them to Claude")
         raise
     time.sleep(1)
 
@@ -160,7 +183,7 @@ def normalize_image(data, url):
                 pass
         img = Image.open(io.BytesIO(data)).convert("RGB")
         out = io.BytesIO()
-        img.save(out, "JPEG", quality=92)
+        img.save(out, "JPEG", quality=JPEG_QUALITY)
         return ".jpg", out.getvalue()
     except Exception as e:
         print(f"   ⚠️ Couldn't convert {fmt} page ({e}); saving as-is")
@@ -203,7 +226,7 @@ def process_issue(issue_num, series_id, start_issue_id, page, context, user_agen
         return f"⏭️  Skipping {issue_num}"
 
     issue_id = start_issue_id + (issue_num - START_ISSUE)
-    active_url = f"https://batcave.biz/reader/{series_id}/{issue_id}"
+    active_url = f"{SITE_URL}/reader/{series_id}/{issue_id}"
     print(f"📖 Issue {issue_num}: {active_url}")
 
     try:
@@ -259,7 +282,7 @@ if __name__ == "__main__":
                     raise SystemExit(1)
                 print("🚀 Opening Chrome... if you see a 'verify you are human' check, click it.")
                 subprocess.Popen([CHROME_PATH, f"--remote-debugging-port={DEBUG_PORT}",
-                                  f"--user-data-dir={CHROME_PROFILE}", "https://batcave.biz/"])
+                                  f"--user-data-dir={CHROME_PROFILE}", SITE_URL + "/"])
                 for _ in range(30):
                     time.sleep(1)
                     try:
