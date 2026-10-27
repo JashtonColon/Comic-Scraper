@@ -92,6 +92,7 @@ class App(tk.Tk):
         self.settings = load_settings()
         self.verbose = tk.BooleanVar(value=bool(self.settings.pop("verbose", False)))
         self.hide_chrome = tk.BooleanVar(value=bool(self.settings.pop("hide_chrome", True)))
+        self.all_issues = tk.BooleanVar(value=bool(self.settings.pop("all_issues", False)))
         self.vars = {k: tk.StringVar(value=str(v)) for k, v in self.settings.items()}
         self.log_q = queue.Queue()
         self.ui_q = queue.Queue()          # work the background thread wants done on screen
@@ -172,10 +173,16 @@ class App(tk.Tk):
 
         ttk.Label(dl, text="Issues").grid(row=1, column=0, sticky="w", **pad)
         issues = ttk.Frame(dl)
-        issues.grid(row=1, column=1, sticky="w", **pad)
-        ttk.Spinbox(issues, from_=1, to=9999, width=6, textvariable=self.vars["start_issue"]).pack(side="left")
-        ttk.Label(issues, text="  to  ").pack(side="left")
-        ttk.Spinbox(issues, from_=1, to=9999, width=6, textvariable=self.vars["end_issue"]).pack(side="left")
+        issues.grid(row=1, column=1, columnspan=3, sticky="w", **pad)
+        self.range_boxes = [
+            ttk.Spinbox(issues, from_=1, to=9999, width=6, textvariable=self.vars["start_issue"]),
+            ttk.Label(issues, text="  to  "),
+            ttk.Spinbox(issues, from_=1, to=9999, width=6, textvariable=self.vars["end_issue"])]
+        for w in self.range_boxes:
+            w.pack(side="left")
+        ttk.Checkbutton(issues, text="Get every issue in this series (all issues, annuals, TPBs and specials)",
+                        variable=self.all_issues, command=self._toggle_all).pack(side="left", padx=(16, 0))
+        self._toggle_all()
 
         ttk.Label(dl, text="Comic name (folder)").grid(row=2, column=0, sticky="w", **pad)
         ttk.Entry(dl, textvariable=self.vars["folder_name"]).grid(row=2, column=1, columnspan=3, sticky="ew", **pad)
@@ -274,6 +281,13 @@ class App(tk.Tk):
             self.link_check.config(text="Not a reader link. It should look like "
                                         "https://batcave.biz/reader/9264/60124", foreground="#c62828")
 
+    def _toggle_all(self):
+        state = "disabled" if self.all_issues.get() else "normal"
+        for w in self.range_boxes:
+            w.configure(state=state)
+        if hasattr(self, "preview"):
+            self._update_preview()
+
     def _prefix(self):
         p = self.vars["filename_prefix"].get().strip()
         return p or "".join(self.vars["folder_name"].get().split()) or "Comic"
@@ -301,7 +315,11 @@ class App(tk.Tk):
         except ValueError:
             n = 1
         example = os.path.join(self._single_dir(), f"{self._prefix()}_{str(n).zfill(3)}{scraper.ARCHIVE_EXT}")
-        self.preview.config(text=f"First file: {example}")
+        if self.all_issues.get():
+            self.preview.config(text=f"Files go in: {self._single_dir()}  (e.g. {self._prefix()}_001, "
+                                     f"{self._prefix()}_Annual_01, {self._prefix()} - Vol 1 TPB)")
+        else:
+            self.preview.config(text=f"First file: {example}")
 
     def _pick_root(self):
         d = filedialog.askdirectory(initialdir=self.vars["final_root"].get() or os.path.expanduser("~"))
@@ -350,6 +368,7 @@ class App(tk.Tk):
         data["tab"] = str(self.tabs.index("current"))
         data["verbose"] = self.verbose.get()
         data["hide_chrome"] = self.hide_chrome.get()
+        data["all_issues"] = self.all_issues.get()
         return data
 
     def _set_verbose(self):
@@ -419,9 +438,11 @@ class App(tk.Tk):
         try:
             start, end = int(s["start_issue"]), int(s["end_issue"])
         except ValueError:
-            messagebox.showerror(APP_NAME, "Issue numbers must be whole numbers.")
-            return
-        if end < start:
+            if not s["all_issues"]:
+                messagebox.showerror(APP_NAME, "Issue numbers must be whole numbers.")
+                return
+            start = end = 1
+        if end < start and not s["all_issues"]:
             messagebox.showerror(APP_NAME, "The last issue can't be before the first issue.")
             return
 
@@ -433,6 +454,7 @@ class App(tk.Tk):
         scraper.SUB_PATH = s["sub_path"]
         scraper.FOLDER_NAME = s["folder_name"]
         scraper.FILENAME_PREFIX = self._prefix()
+        scraper.ALL_ISSUES = s["all_issues"]
         self._run(scraper.run)
 
     # =================================================================

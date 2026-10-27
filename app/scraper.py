@@ -16,6 +16,7 @@ SUB_PATH = "Batman"              # set to "" to skip this level
 FOLDER_NAME = "Long Halloween"
 FILENAME_PREFIX = "LongHalloween"
 ARCHIVE_EXT = ".cbz"             # ZIP comic archive; works in Calibre and ComicsPlusPlus
+ALL_ISSUES = False               # True = ignore START/END_ISSUE and download everything in the series
 
 
 # =====================================================================
@@ -595,23 +596,74 @@ READER_LINKS_JS = r"""
 """
 
 
-def issue_links_for_range(page, series_id, start_url, first_load):
-    """Batcave's issue IDs don't always count up by one (Uncanny X-Men #1 is 39016, #2 is 39018),
-    so read the real issue list and pick issues by number. Returns {file_number: reader_url}
-    and a list of issue numbers that aren't on Batcave, or (None, None) if the list can't be read."""
+def series_entries(page, series_id, start_url, first_load, complete=False):
+    """Every issue Batcave lists for the series that start_url belongs to, as issue_map() data,
+    or None if the list can't be read. complete=True prefers the full series page over any
+    issue list shown on the reader page itself."""
     import readinglist as R          # shares the series-page reader with reading lists
     page.goto(start_url, wait_until="domcontentloaded", timeout=60000)
     try:
         wait_for_reader(page, first_load)
     except PWTimeout:
-        return None, None
+        return None
     found = page.evaluate(READER_LINKS_JS, str(series_id))
-    issues = found["issues"] if len(found["issues"]) > 1 else []
-    if not issues and found["series"]:
+    on_reader = found["issues"] if len(found["issues"]) > 1 else []
+    issues = []
+    if found["series"] and (complete or not on_reader):
         issues = R.batcave_series_issues(page, found["series"])
-    if not issues:
+    issues = issues or on_reader
+    return R.issue_map(issues) if issues else None
+
+
+def all_issue_files(bc):
+    """Everything in a series, in a sensible order, with file names:
+    issues by number, then annuals, then named entries (TPBs, specials) as Batcave lists them."""
+    import readinglist as R
+    def num_key(n):
+        m = re.match(r"(\d+)(.*)", n)
+        return (0, int(m.group(1)), m.group(2)) if m else (1, 0, n)
+    regular = [e for e in bc["entries"] if e["explicit"] and not e["annual"]]
+    annuals = [e for e in bc["entries"] if e["explicit"] and e["annual"]]
+    def natural(t):                                   # "Vol 2" before "Vol 10"
+        return [int(p) if p.isdigit() else p.lower() for p in re.split(r"(\d+)", t)]
+    named = sorted((e for e in bc["entries"] if not e["explicit"]), key=lambda e: natural(e["title"]))
+    out, seen = [], set()
+
+    def add(label, stem, href):
+        stem = R.safe_filename(stem)
+        if stem.lower() in seen:                       # two entries with the same name
+            stem = f"{stem} ({href.rstrip('/').split('/')[-1]})"
+        seen.add(stem.lower())
+        out.append((label, stem, href))
+
+    for e in sorted(regular, key=lambda e: num_key(e["num"])):
+        n = e["num"]
+        add(f"#{n}", f"{FILENAME_PREFIX}_{n.zfill(3) if n.isdigit() else n}", e["href"])
+    for e in sorted(annuals, key=lambda e: num_key(e["num"])):
+        n = e["num"]
+        add(f"Annual #{n}", f"{FILENAME_PREFIX}_Annual_{n.zfill(2) if n.isdigit() else n}", e["href"])
+    # the series name every entry starts with, e.g. "L.E.G.I.O.N. " or "Uncanny X-Men (1963) "
+    titles = [e["title"] for e in bc["entries"]]
+    common = os.path.commonprefix(titles) if len(titles) > 1 else ""
+    common = common[:common.rfind(" ") + 1] if " " in common else ""
+    for e in named:
+        t = e["title"]
+        rest = t[len(common):].strip() if common and t.startswith(common) else t
+        if rest == t and ")" in t:
+            rest = t.split(")", 1)[1].strip()
+        rest = rest or t
+        add(rest, f"{FILENAME_PREFIX} - {rest}", e["href"])
+    return out
+
+
+def issue_links_for_range(page, series_id, start_url, first_load):
+    """Batcave's issue IDs don't always count up by one (Uncanny X-Men #1 is 39016, #2 is 39018),
+    so read the real issue list and pick issues by number. Returns {file_number: reader_url}
+    and a list of issue numbers that aren't on Batcave, or (None, None) if the list can't be read."""
+    bc = series_entries(page, series_id, start_url, first_load)
+    if not bc:
         return None, None
-    entries = [e for e in R.issue_map(issues)["entries"] if e["explicit"]]
+    entries = [e for e in bc["entries"] if e["explicit"]]
     start_id = start_url.split("#")[0].split("?")[0].rstrip("/").split("/")[-1]
     start = next((e for e in entries if e["href"].rstrip("/").split("/")[-1] == start_id), None)
     if not start or not re.fullmatch(r"\d+", start["num"]):
@@ -630,6 +682,38 @@ def issue_links_for_range(page, series_id, start_url, first_load):
             missing.append(f"#{n}")
     detail(f"   Read {len(entries)} issues from Batcave's list; starting at issue #{first_num}")
     return links, missing
+
+
+def run_all(page, series_id, pipeline):
+    """Download every issue, annual and named entry (TPBs, specials) in the series."""
+    final_dir = os.path.join(FINAL_ROOT, SUB_PATH, FOLDER_NAME) if SUB_PATH else os.path.join(FINAL_ROOT, FOLDER_NAME)
+    try:
+        bc = series_entries(page, series_id, START_URL, True, complete=True)
+        if not bc:
+            problem("Couldn't read this series' issue list from Batcave. Untick 'every issue' and use a range instead.")
+            return
+        files = all_issue_files(bc)
+        kinds = {"issues": sum(1 for f in files if f[0].startswith("#")),
+                 "annuals": sum(1 for f in files if f[0].startswith("Annual")),
+                 "others (TPBs, specials)": sum(1 for f in files if not f[0].startswith(("#", "Annual")))}
+        print(f"Batcave lists {len(files)} entries: " + ", ".join(f"{v} {k}" for k, v in kinds.items() if v))
+        skipped, first = 0, False
+        for n, (label, stem, href) in enumerate(files, 1):
+            if STOP_REQUESTED:
+                print("Stopped by user")
+                break
+            path = os.path.join(final_dir, stem + ARCHIVE_EXT)
+            if os.path.exists(path):
+                skipped += 1
+                continue
+            new_issue_log()
+            print(f"[{n}/{len(files)}] {label}...")
+            pipeline.add(label, href, path, page, first)
+        if skipped:
+            print(f"Skipped {skipped} already downloaded")
+    finally:
+        pipeline.close()
+    print("Done")
 
 
 def run():
@@ -653,6 +737,9 @@ def run():
                 else:
                     problem(f"Error: {info} for issue {issue}")
             pipeline = Pipeline(context, user_agent, done)
+            if ALL_ISSUES:
+                run_all(page, series_id, pipeline)
+                return
             links, missing = issue_links_for_range(page, series_id, START_URL, True)
             if links is None:
                 problem("Couldn't read this series' issue list from Batcave, so counting issue IDs up by one. "
