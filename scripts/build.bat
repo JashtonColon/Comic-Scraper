@@ -3,7 +3,7 @@ REM ==========================================================
 REM  Builds "Comic Scraper.exe" and (if Inno Setup is installed)
 REM  the ComicScraper-Setup.exe installer.  Double-click to run.
 REM ==========================================================
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 echo [1/3] Installing build tools...
 python -m pip install --upgrade -r requirements.txt pyinstaller || goto :error
@@ -11,10 +11,10 @@ python -m pip install --upgrade -r requirements.txt pyinstaller || goto :error
 echo [2/3] Building the app...
 python -m PyInstaller --noconfirm --clean --windowed ^
   --name "Comic Scraper" ^
-  --icon icon.ico ^
-  --add-data "icon.ico;." ^
+  --icon assets\icon.ico ^
+  --add-data "assets\icon.ico;." ^
   --collect-data playwright ^
-  gui.py || goto :error
+  app\gui.py || goto :error
 
 echo [3/3] Building the installer...
 set ISCC="%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
@@ -27,7 +27,7 @@ if not exist %ISCC% (
   echo To also make an installer, install Inno Setup 6 from https://jrsoftware.org/isdl.php and run this again.
   goto :done
 )
-%ISCC% installer.iss || goto :error
+%ISCC% installer\installer.iss || goto :error
 echo.
 echo Done! Installer: Output\ComicScraper-Setup.exe
 

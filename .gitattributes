@@ -1,0 +1,7 @@
+# Windows scripts need Windows line endings
+*.bat text eol=crlf
+*.iss text eol=crlf
+# everything else: let Git handle it
+* text=auto
+*.ico binary
+*.png binary

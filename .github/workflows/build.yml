@@ -28,8 +28,8 @@ jobs:
       - name: Build app
         run: >
           python -m PyInstaller --noconfirm --clean --windowed
-          --name "Comic Scraper" --icon icon.ico --add-data "icon.ico;."
-          --collect-data playwright gui.py
+          --name "Comic Scraper" --icon assets/icon.ico --add-data "assets/icon.ico;."
+          --collect-data playwright app/gui.py
 
       - name: Pick version
         shell: bash
@@ -45,7 +45,7 @@ jobs:
             if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
             $env:PATH += ";${env:ProgramFiles(x86)}\Inno Setup 6"
           }
-          iscc /DAppVersion=$env:APP_VERSION installer.iss
+          iscc /DAppVersion=$env:APP_VERSION installer\installer.iss
 
       - uses: actions/upload-artifact@v4
         with:

@@ -1,4 +1,5 @@
-; Inno Setup script for Comic Scraper.  Built by build.bat (or the GitHub workflow).
+; Inno Setup script for Comic Scraper.  Built by scripts\build.bat (or the GitHub workflow).
+; Paths are relative to this installer folder.
 #define AppName "Comic Scraper"
 #ifndef AppVersion
   #define AppVersion "1.0.0"
@@ -14,9 +15,9 @@ DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 ; installs for the current user only, so no admin prompt
 PrivilegesRequired=lowest
-OutputDir=Output
+OutputDir=..\Output
 OutputBaseFilename=ComicScraper-Setup
-SetupIconFile=icon.ico
+SetupIconFile=..\assets\icon.ico
 UninstallDisplayIcon={app}\{#AppName}.exe
 Compression=lzma2/max
 SolidCompression=yes
@@ -26,7 +27,7 @@ WizardStyle=modern
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
 
 [Files]
-Source: "dist\{#AppName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\{#AppName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppName}.exe"

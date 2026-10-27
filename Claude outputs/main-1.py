@@ -19,12 +19,12 @@ ARCHIVE_EXT = ".cbz"             # ZIP comic archive; works in Calibre and Comic
 #  CHROME SETUP  -  set once for your computer, then leave alone
 # =====================================================================
 
-# Where Chrome is installed. Leave "" to find Chrome (or Microsoft Edge) automatically.
-CHROME_PATH = ""
+# Where Chrome is installed. Other common spot:
+#   C:\Program Files (x86)\Google\Chrome\Application\chrome.exe
+CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 
-# Separate browser profile the scraper uses (keeps your Cloudflare pass between runs).
-# Leave "" to use the app's own data folder.
-CHROME_PROFILE = ""
+# Separate Chrome profile the scraper uses (keeps your Cloudflare pass between runs)
+CHROME_PROFILE = r"C:\chrome-scraper"
 
 USE_MY_CHROME = True     # True = open/reuse that normal Chrome window (gets past Cloudflare)
 HIDE_CHROME = True       # True = keep the Chrome window off-screen; it pops up only for a "verify you are human" check
@@ -42,7 +42,7 @@ PAGE_WORKERS = 8         # parallel image downloads per issue
 STEP_DELAY = 0.3         # seconds between page turns (lower = faster)
 MAX_STALLS = 8           # give up flipping after this many turns with no progress
 JPEG_QUALITY = 92        # quality when converting WebP/AVIF pages to JPEG
-DEBUG_SCREENSHOT = "debug_stuck.png"   # saved in the app data folder
+DEBUG_SCREENSHOT = "debug_stuck.png"
 DEBUG_HTML = "debug_stuck.html"
 
 
@@ -58,48 +58,6 @@ import zipfile
 import requests
 from concurrent.futures import ThreadPoolExecutor
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
-
-
-# ---- where the app keeps its own files (settings, browser profile, debug output) ----
-if os.name == "nt":
-    APP_DATA = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "ComicScraper")
-else:
-    APP_DATA = os.path.join(os.path.expanduser("~"), ".comicscraper")
-os.makedirs(APP_DATA, exist_ok=True)
-
-
-def find_browser():
-    """Return the path of an installed Chrome, or Edge (built into Windows), or "" if neither."""
-    if os.name != "nt":
-        return ""
-    roots = [os.environ.get(v) for v in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")]
-    candidates = []
-    for sub in (r"Google\Chrome\Application\chrome.exe", r"Microsoft\Edge\Application\msedge.exe"):
-        candidates += [os.path.join(r, sub) for r in roots if r]
-    for path in candidates:
-        if os.path.exists(path):
-            return path
-    return ""
-
-
-def browser_path():
-    return CHROME_PATH if CHROME_PATH and os.path.exists(CHROME_PATH) else find_browser()
-
-
-def profile_path():
-    return CHROME_PROFILE or os.path.join(APP_DATA, "browser-profile")
-
-
-def parse_reader_url(url):
-    """'https://batcave.biz/reader/9264/60124' -> ('9264', 60124). Raises ValueError if it isn't one."""
-    clean = url.split("#")[0].split("?")[0].strip().rstrip("/")
-    parts = clean.split("/")
-    if "/reader/" not in clean or len(parts) < 2:
-        raise ValueError("not a reader link")
-    series, issue = parts[-2], parts[-1]
-    if not series.isdigit() or not issue.isdigit():
-        raise ValueError("not a reader link")
-    return series, int(issue)
 
 
 # ---- output: step-by-step detail is held back unless VERBOSE or something goes wrong ----
@@ -223,13 +181,11 @@ def collect_image_urls(page, url, first_load=False):
     try:
         wait_for_reader(page, first_load)
     except PWTimeout:
-        shot = os.path.join(APP_DATA, DEBUG_SCREENSHOT)
-        html = os.path.join(APP_DATA, DEBUG_HTML)
-        page.screenshot(path=shot, full_page=True)
-        with open(html, "w", encoding="utf-8") as f:
+        page.screenshot(path=DEBUG_SCREENSHOT, full_page=True)
+        with open(DEBUG_HTML, "w", encoding="utf-8") as f:
             f.write(page.content())
         problem(f"   📸 Reader didn't load. Page title: '{page.title()}'")
-        problem(f"   📸 Saved a screenshot of what Chrome showed: {shot}")
+        problem(f"   📸 Saved {DEBUG_SCREENSHOT} and {DEBUG_HTML} - send them to Claude")
         raise
     time.sleep(1)
 
@@ -396,8 +352,10 @@ def run():
     print(f"📡 Saving to: {os.path.join(FINAL_ROOT, SUB_PATH or '', FOLDER_NAME)}")
 
     try:
-        series_id, start_issue_id = parse_reader_url(START_URL)
-    except ValueError:
+        parts = START_URL.split("#")[0].split("?")[0].strip().strip("/").split("/")
+        start_issue_id = int(parts[-1])
+        series_id = parts[-2]
+    except (ValueError, IndexError):
         print(f"❌ That link doesn't look right: {START_URL}")
         print("   It should look like https://batcave.biz/reader/9264/60124")
         return
@@ -409,17 +367,15 @@ def run():
             try:
                 browser = p.chromium.connect_over_cdp(f"http://localhost:{DEBUG_PORT}")
             except Exception:
-                exe = browser_path()
-                if not exe:
-                    print("❌ Couldn't find Google Chrome or Microsoft Edge. Install Chrome, "
-                          "or set its location in Settings.")
+                if not os.path.exists(CHROME_PATH):
+                    print(f"❌ Chrome not found at {CHROME_PATH} - fix the Chrome location in Settings")
                     return
                 if HIDE_CHROME:
                     detail("🚀 Starting Chrome in the background...")
                 else:
                     print("🚀 Opening Chrome... if you see a 'verify you are human' check, click it.")
-                args = [exe, f"--remote-debugging-port={DEBUG_PORT}",
-                        f"--user-data-dir={profile_path()}",
+                args = [CHROME_PATH, f"--remote-debugging-port={DEBUG_PORT}",
+                        f"--user-data-dir={CHROME_PROFILE}",
                         # keep pages running at full speed even though the window isn't visible
                         "--disable-backgrounding-occluded-windows",
                         "--disable-renderer-backgrounding",
