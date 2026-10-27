@@ -209,20 +209,20 @@ def wait_for_reader(page, first_load):
         return
     except PWTimeout:
         pass
-    print("🔓 Chrome needs you: click the 'verify you are human' box in the window that just popped up.")
+    print("Chrome needs you: click the 'verify you are human' box in the window that just popped up.")
     set_chrome_visible(page, True)
     try:
         page.wait_for_selector(READER_SELECTOR, timeout=max(long_wait, 120000))
-        print("   ✔️  Thanks! Hiding Chrome again.")
+        print("Thanks! Hiding Chrome again.")
     finally:
         set_chrome_visible(page, False)
 
 
 def collect_image_urls(page, url, first_load=False):
-    detail("   🌐 Opening reader...")
+    detail("Opening reader...")
     page.goto(url, wait_until="domcontentloaded", timeout=60000)
     # Long wait on the very first load in case a Cloudflare check needs solving
-    detail("   ⏳ Waiting for reader pages to appear...")
+    detail("Waiting for reader pages to appear...")
     try:
         wait_for_reader(page, first_load)
     except PWTimeout:
@@ -231,8 +231,8 @@ def collect_image_urls(page, url, first_load=False):
         page.screenshot(path=shot, full_page=True)
         with open(html, "w", encoding="utf-8") as f:
             f.write(page.content())
-        problem(f"   📸 Reader didn't load. Page title: '{page.title()}'")
-        problem(f"   📸 Saved a screenshot of what Chrome showed: {shot}")
+        problem(f"Reader didn't load. Page title: '{page.title()}'")
+        problem(f"Saved a screenshot of what Chrome showed: {shot}")
         raise
     time.sleep(1)
 
@@ -246,13 +246,13 @@ def collect_image_urls(page, url, first_load=False):
                 found[num] = src
 
         total = data["total"]
-        detail(f"   🔎 On page {data['active']} | image URLs found: {len(found)}/{total}")
+        detail(f"On page {data['active']} | image URLs found: {len(found)}/{total}")
         if total and len(found) >= total:
             break
 
         stalls = 0 if len(found) > before else stalls + 1
         if stalls >= MAX_STALLS:
-            problem(f"   ⚠️ Stopped flipping at {len(found)}/{total} pages")
+            problem(f"Stopped flipping at {len(found)}/{total} pages")
             break
 
         if STOP_REQUESTED:
@@ -295,7 +295,7 @@ def normalize_image(data, url):
         return "." + fmt, data
     if fmt is None:
         preview = data[:80].decode("utf-8", "replace").replace("\n", " ") if data else "<empty>"
-        problem(f"   ⚠️ Not an image: {url[:70]}... starts with: {preview!r}")
+        problem(f"Not an image: {url[:70]}... starts with: {preview!r}")
         return None, None
     # webp / avif / gif -> convert to JPEG for reader compatibility
     try:
@@ -310,7 +310,7 @@ def normalize_image(data, url):
         img.save(out, "JPEG", quality=JPEG_QUALITY)
         return ".jpg", out.getvalue()
     except Exception as e:
-        problem(f"   ⚠️ Couldn't convert {fmt} page ({e}); saving as-is")
+        problem(f"Couldn't convert {fmt} page ({e}); saving as-is")
         return "." + fmt, data
 
 
@@ -334,9 +334,9 @@ def download_with_browser(context, url, referer):
         r = context.request.get(url, headers={"Referer": referer}, timeout=15000)
         if r.ok:
             return normalize_image(r.body(), url)
-        problem(f"   ⚠️ Image failed: {url[:80]}... (Status: {r.status})")
+        problem(f"Image failed: {url[:80]}... (Status: {r.status})")
     except Exception as e:
-        problem(f"   ⚠️ Image error: {url[:80]}... ({e})")
+        problem(f"Image error: {url[:80]}... ({e})")
     return None, None
 
 
@@ -347,38 +347,38 @@ def process_issue(issue_num, series_id, start_issue_id, page, context, user_agen
     final_save_path = os.path.join(final_dir, f"{FILENAME_PREFIX}_{issue_padded}{ARCHIVE_EXT}")
 
     if os.path.exists(final_save_path):
-        return f"⏭️  Skipping {issue_num}"
+        return f"Skipping {issue_num}"
 
     issue_id = start_issue_id + (issue_num - START_ISSUE)
     active_url = f"{SITE_URL}/reader/{series_id}/{issue_id}"
     new_issue_log()
-    print(f"📖 Issue {issue_num} of {END_ISSUE}...")
+    print(f"Issue {issue_num} of {END_ISSUE}...")
     detail(f"   {active_url}")
 
     try:
         urls = collect_image_urls(page, active_url, first_load)
     except PWTimeout:
-        return f"❌ Reader never loaded for issue {issue_num}"
+        return f"Reader never loaded for issue {issue_num}"
     if not urls:
-        return f"❌ No image URLs found for issue {issue_num}"
+        return f"No image URLs found for issue {issue_num}"
 
     # Fast path: parallel downloads with the browser's cookies
-    detail(f"   ⬇️  Downloading {len(urls)} pages...")
+    detail(f"Downloading {len(urls)} pages...")
     session = make_session(context, user_agent)
     with ThreadPoolExecutor(max_workers=PAGE_WORKERS) as ex:
         results = list(ex.map(lambda u: download_with_requests(session, u, active_url), urls))
 
     failed = [i for i, r in enumerate(results) if r[1] is None]
-    detail(f"   ✔️  Fast download: {len(urls) - len(failed)}/{len(urls)} OK")
+    detail(f"Fast download: {len(urls) - len(failed)}/{len(urls)} OK")
 
     # Fallback: anything that failed gets retried through the browser itself
     for n, i in enumerate(failed, 1):
-        detail(f"   🔁 Browser retry {n}/{len(failed)}")
+        detail(f"Browser retry {n}/{len(failed)}")
         results[i] = download_with_browser(context, urls[i], active_url)
 
     valid_pages = [p for p in results if p[1] is not None]
     if not valid_pages:
-        return f"❌ No valid images downloaded for {issue_num}"
+        return f"No valid images downloaded for {issue_num}"
 
     with zipfile.ZipFile(final_save_path, "w") as archive:
         for idx, (ext, content) in enumerate(valid_pages):
@@ -386,7 +386,7 @@ def process_issue(issue_num, series_id, start_issue_id, page, context, user_agen
 
     missing = len(urls) - len(valid_pages)
     note = f", {missing} missing" if missing else ""
-    return f"✅ Issue {issue_num} saved (Pages: {len(valid_pages)}{note})"
+    return f"Issue {issue_num} saved (Pages: {len(valid_pages)}{note})"
 
 
 STOP_REQUESTED = False   # the app window sets this to stop after the current issue
@@ -396,12 +396,12 @@ def run():
     """Run a full scrape using the settings at the top of this file (or the ones the app set)."""
     global STOP_REQUESTED
     STOP_REQUESTED = False
-    print(f"📡 Saving to: {os.path.join(FINAL_ROOT, SUB_PATH or '', FOLDER_NAME)}")
+    print(f"Saving to: {os.path.join(FINAL_ROOT, SUB_PATH or '', FOLDER_NAME)}")
 
     try:
         series_id, start_issue_id = parse_reader_url(START_URL)
     except ValueError:
-        print(f"❌ That link doesn't look right: {START_URL}")
+        print(f"That link doesn't look right: {START_URL}")
         print("   It should look like https://batcave.biz/reader/9264/60124")
         return
 
@@ -414,13 +414,13 @@ def run():
             except Exception:
                 exe = browser_path()
                 if not exe:
-                    print("❌ Couldn't find Google Chrome or Microsoft Edge. Install Chrome, "
+                    print("Couldn't find Google Chrome or Microsoft Edge. Install Chrome, "
                           "or set its location in Settings.")
                     return
                 if HIDE_CHROME:
-                    detail("🚀 Starting Chrome in the background...")
+                    detail("Starting Chrome in the background...")
                 else:
-                    print("🚀 Opening Chrome... if you see a 'verify you are human' check, click it.")
+                    print("Opening Chrome... if you see a 'verify you are human' check, click it.")
                 args = [exe, f"--remote-debugging-port={DEBUG_PORT}",
                         f"--user-data-dir={profile_path()}",
                         # keep pages running at full speed even though the window isn't visible
@@ -439,7 +439,7 @@ def run():
                     except Exception:
                         pass
                 if browser is None:
-                    print("❌ Chrome opened but the script couldn't connect. Close ALL Chrome windows and try again.")
+                    print("Chrome opened but the script couldn't connect. Close ALL Chrome windows and try again.")
                     return
             context = browser.contexts[0]
         else:
@@ -454,7 +454,7 @@ def run():
         first = True
         for issue in range(START_ISSUE, END_ISSUE + 1):
             if STOP_REQUESTED:
-                print("⏹️  Stopped by user")
+                print("Stopped by user")
                 break
             result = process_issue(issue, series_id, start_issue_id, page, context, user_agent, first)
             (problem if result.startswith("❌") else print)(result)
@@ -463,7 +463,7 @@ def run():
         page.close()   # leaves your Chrome window open
         if not USE_MY_CHROME:
             browser.close()
-    print("🏁 Done")
+    print("Done")
 
 
 if __name__ == "__main__":
