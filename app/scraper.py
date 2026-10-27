@@ -56,6 +56,7 @@ DEBUG_HTML = "debug_stuck.html"
 import contextlib
 import io
 import os
+import re
 import subprocess
 import time
 import zipfile
@@ -491,7 +492,8 @@ class Pipeline:
         self.ex.shutdown(wait=True)
 
 
-def process_issue(issue_num, series_id, start_issue_id, page, context, user_agent, first_load, pipeline=None):
+def process_issue(issue_num, series_id, start_issue_id, page, context, user_agent, first_load, pipeline=None,
+                  reader_url=None):
     issue_padded = str(issue_num).zfill(3)
     final_dir = os.path.join(FINAL_ROOT, SUB_PATH, FOLDER_NAME) if SUB_PATH else os.path.join(FINAL_ROOT, FOLDER_NAME)
     final_save_path = os.path.join(final_dir, f"{FILENAME_PREFIX}_{issue_padded}{ARCHIVE_EXT}")
@@ -499,8 +501,11 @@ def process_issue(issue_num, series_id, start_issue_id, page, context, user_agen
     if os.path.exists(final_save_path):
         return True, f"Skipping {issue_num} (already downloaded)"
 
-    issue_id = start_issue_id + (issue_num - START_ISSUE)
-    active_url = f"{SITE_URL}/reader/{series_id}/{issue_id}"
+    if reader_url:
+        active_url = reader_url
+    else:                             # old way: assume IDs count up by one (not always true)
+        issue_id = start_issue_id + (issue_num - START_ISSUE)
+        active_url = f"{SITE_URL}/reader/{series_id}/{issue_id}"
     new_issue_log()
     print(f"Issue {issue_num} of {END_ISSUE}...")
 
@@ -578,6 +583,55 @@ def browser_session():
                 browser.close()
 
 
+READER_LINKS_JS = r"""
+(sid) => {
+  // issue links on the reader page itself (e.g. a table-of-contents list) and the series page link
+  const issues = [...document.querySelectorAll(`a[href*="/reader/${sid}/"]`)]
+      .map(a => [a.textContent.replace(/\s+/g, ' ').trim(), a.href]).filter(([t]) => /#\s*\d|issue/i.test(t));
+  const series = [...document.querySelectorAll('a[href]')]
+      .map(a => a.href).find(h => new RegExp(`/${sid}-[^/]+\\.html`).test(h));
+  return {issues, series: series ? series.split('#')[0] : null};
+}
+"""
+
+
+def issue_links_for_range(page, series_id, start_url, first_load):
+    """Batcave's issue IDs don't always count up by one (Uncanny X-Men #1 is 39016, #2 is 39018),
+    so read the real issue list and pick issues by number. Returns {file_number: reader_url}
+    and a list of issue numbers that aren't on Batcave, or (None, None) if the list can't be read."""
+    import readinglist as R          # shares the series-page reader with reading lists
+    page.goto(start_url, wait_until="domcontentloaded", timeout=60000)
+    try:
+        wait_for_reader(page, first_load)
+    except PWTimeout:
+        return None, None
+    found = page.evaluate(READER_LINKS_JS, str(series_id))
+    issues = found["issues"] if len(found["issues"]) > 1 else []
+    if not issues and found["series"]:
+        issues = R.batcave_series_issues(page, found["series"])
+    if not issues:
+        return None, None
+    entries = [e for e in R.issue_map(issues)["entries"] if e["explicit"]]
+    start_id = start_url.split("#")[0].split("?")[0].rstrip("/").split("/")[-1]
+    start = next((e for e in entries if e["href"].rstrip("/").split("/")[-1] == start_id), None)
+    if not start or not re.fullmatch(r"\d+", start["num"]):
+        return None, None
+    by_num = {}
+    for e in entries:
+        if e["annual"] == start["annual"]:
+            by_num.setdefault(e["num"], e["href"])
+    first_num = int(start["num"])
+    links, missing = {}, []
+    for k in range(END_ISSUE - START_ISSUE + 1):
+        n = str(first_num + k)
+        if n in by_num:
+            links[START_ISSUE + k] = by_num[n]
+        else:
+            missing.append(f"#{n}")
+    detail(f"   Read {len(entries)} issues from Batcave's list; starting at issue #{first_num}")
+    return links, missing
+
+
 def run():
     """Run a full scrape using the settings at the top of this file (or the ones the app set)."""
     global STOP_REQUESTED
@@ -599,14 +653,22 @@ def run():
                 else:
                     problem(f"Error: {info} for issue {issue}")
             pipeline = Pipeline(context, user_agent, done)
-            first = True
+            links, missing = issue_links_for_range(page, series_id, START_URL, True)
+            if links is None:
+                problem("Couldn't read this series' issue list from Batcave, so counting issue IDs up by one. "
+                        "Some series skip IDs, so check that the issues are the right ones.")
+            elif missing:
+                problem(f"Not on Batcave: {', '.join(missing)}")
+            first = links is None
             try:
                 for issue in range(START_ISSUE, END_ISSUE + 1):
                     if STOP_REQUESTED:
                         print("Stopped by user")
                         break
+                    if links is not None and issue not in links:
+                        continue
                     ok, result = process_issue(issue, series_id, start_issue_id, page, context, user_agent,
-                                               first, pipeline)
+                                               first, pipeline, reader_url=(links or {}).get(issue))
                     if result:
                         (print if ok else problem)(result)
                     first = False
