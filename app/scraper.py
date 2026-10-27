@@ -347,7 +347,7 @@ def process_issue(issue_num, series_id, start_issue_id, page, context, user_agen
     final_save_path = os.path.join(final_dir, f"{FILENAME_PREFIX}_{issue_padded}{ARCHIVE_EXT}")
 
     if os.path.exists(final_save_path):
-        return f"Skipping {issue_num}"
+        return True, f"Skipping {issue_num} (already downloaded)"
 
     issue_id = start_issue_id + (issue_num - START_ISSUE)
     active_url = f"{SITE_URL}/reader/{series_id}/{issue_id}"
@@ -358,9 +358,9 @@ def process_issue(issue_num, series_id, start_issue_id, page, context, user_agen
     try:
         urls = collect_image_urls(page, active_url, first_load)
     except PWTimeout:
-        return f"Reader never loaded for issue {issue_num}"
+        return False, f"Error: Reader never loaded for issue {issue_num}"
     if not urls:
-        return f"No image URLs found for issue {issue_num}"
+        return False, f"Error: No image URLs found for issue {issue_num}"
 
     # Fast path: parallel downloads with the browser's cookies
     detail(f"Downloading {len(urls)} pages...")
@@ -378,7 +378,7 @@ def process_issue(issue_num, series_id, start_issue_id, page, context, user_agen
 
     valid_pages = [p for p in results if p[1] is not None]
     if not valid_pages:
-        return f"No valid images downloaded for {issue_num}"
+        return False, f"Error: No valid images downloaded for {issue_num}"
 
     with zipfile.ZipFile(final_save_path, "w") as archive:
         for idx, (ext, content) in enumerate(valid_pages):
@@ -386,7 +386,7 @@ def process_issue(issue_num, series_id, start_issue_id, page, context, user_agen
 
     missing = len(urls) - len(valid_pages)
     note = f", {missing} missing" if missing else ""
-    return f"Issue {issue_num} saved (Pages: {len(valid_pages)}{note})"
+    return True, f"Issue {issue_num} saved (Pages: {len(valid_pages)}{note})"
 
 
 STOP_REQUESTED = False   # the app window sets this to stop after the current issue
@@ -456,8 +456,8 @@ def run():
             if STOP_REQUESTED:
                 print("Stopped by user")
                 break
-            result = process_issue(issue, series_id, start_issue_id, page, context, user_agent, first)
-            (problem if result.startswith("❌") else print)(result)
+            ok, result = process_issue(issue, series_id, start_issue_id, page, context, user_agent, first)
+            (print if ok else problem)(result)
             first = False
 
         page.close()   # leaves your Chrome window open

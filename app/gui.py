@@ -128,7 +128,7 @@ class App(tk.Tk):
 
         ttk.Label(dl, text="Save comics in").grid(row=5, column=0, sticky="w", **pad)
         ttk.Entry(dl, textvariable=self.vars["final_root"]).grid(row=5, column=1, columnspan=2, sticky="ew", **pad)
-        ttk.Button(dl, text="Browse…", command=self._pick_root).grid(row=5, column=3, **pad)
+        ttk.Button(dl, text="Browse...", command=self._pick_root).grid(row=5, column=3, **pad)
 
         self.preview = ttk.Label(dl, foreground="gray")
         self.preview.grid(row=6, column=0, columnspan=4, sticky="w", **pad)
@@ -139,12 +139,12 @@ class App(tk.Tk):
         # Buttons
         btns = ttk.Frame(root)
         btns.grid(row=1, column=0, sticky="ew", pady=8)
-        self.start_btn = ttk.Button(btns, text="▶  Start", command=self._start)
+        self.start_btn = ttk.Button(btns, text="Start", command=self._start)
         self.start_btn.pack(side="left")
-        self.stop_btn = ttk.Button(btns, text="■  Stop", command=self._stop, state="disabled")
+        self.stop_btn = ttk.Button(btns, text="Stop", command=self._stop, state="disabled")
         self.stop_btn.pack(side="left", padx=6)
         ttk.Button(btns, text="Open folder", command=self._open_folder).pack(side="left", padx=6)
-        ttk.Button(btns, text="⚙  Settings", command=self._open_settings).pack(side="right")
+        ttk.Button(btns, text="Settings", command=self._open_settings).pack(side="right")
         ttk.Checkbutton(btns, text="Show details", variable=self.verbose,
                         command=self._set_verbose).pack(side="right", padx=10)
 
@@ -169,9 +169,9 @@ class App(tk.Tk):
             return
         try:
             series, issue = scraper.parse_reader_url(url)
-            self.link_check.config(text=f"Series {series} · first issue {issue}  ✓", foreground="#2e7d32")
+            self.link_check.config(text=f"Looks good: series {series}, first issue {issue}", foreground="#2e7d32")
         except ValueError:
-            self.link_check.config(text="⚠ Not a reader link. It should look like "
+            self.link_check.config(text="Not a reader link. It should look like "
                                         "https://batcave.biz/reader/9264/60124", foreground="#c62828")
 
     def _prefix(self):
@@ -283,14 +283,14 @@ class App(tk.Tk):
                 try:
                     scraper.run()
                 except Exception as e:  # show any crash in the log instead of closing
-                    print(f"\n❌ Error: {e}")
+                    print(f"\nError: {e}")
 
         self.worker = threading.Thread(target=work, daemon=True)
         self.worker.start()
 
     def _stop(self):
         scraper.STOP_REQUESTED = True
-        self._log("\n⏹️  Stopping after the current step...\n")
+        self._log("\nStopping after the current step...\n")
         self.stop_btn.config(state="disabled")
 
     def _open_settings(self):
@@ -310,7 +310,7 @@ class App(tk.Tk):
                                            filetypes=[("Browser", "chrome.exe msedge.exe"), ("Programs", "*.exe")])
             if p:
                 self.vars["chrome_path"].set(os.path.normpath(p))
-        ttk.Button(f, text="Browse…", command=pick_chrome).grid(row=0, column=2, padx=6)
+        ttk.Button(f, text="Browse...", command=pick_chrome).grid(row=0, column=2, padx=6)
 
         ttk.Label(f, text="Browser profile folder").grid(row=1, column=0, sticky="w", padx=6, pady=6)
         ttk.Entry(f, textvariable=self.vars["chrome_profile"], width=60).grid(row=1, column=1, sticky="ew", padx=6)
@@ -324,14 +324,14 @@ class App(tk.Tk):
         def refresh(*_):
             typed = self.vars["chrome_path"].get().strip()
             if typed and not os.path.exists(typed):
-                status.config(text="⚠ Nothing found at that location", foreground="#c62828")
+                status.config(text="Nothing found at that location", foreground="#c62828")
                 return
             found = typed or scraper.find_browser()
             if found:
                 how = "" if typed else " (found automatically - leave the box empty)"
-                status.config(text=f"✓ Using {found}{how}", foreground="#2e7d32")
+                status.config(text=f"Using {found}{how}", foreground="#2e7d32")
             else:
-                status.config(text="⚠ Couldn't find Chrome or Edge - click Browse", foreground="#c62828")
+                status.config(text="Couldn't find Chrome or Edge - click Browse", foreground="#c62828")
         trace = self.vars["chrome_path"].trace_add("write", refresh)
         win.bind("<Destroy>", lambda e: e.widget is win and self.vars["chrome_path"].trace_remove("write", trace))
         refresh()
