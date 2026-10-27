@@ -21,3 +21,6 @@ build/
 dist/
 Output/
 *.spec
+
+# Copies of files sent in chat
+Claude outputs/
