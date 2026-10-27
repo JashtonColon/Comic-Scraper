@@ -202,10 +202,59 @@ def turn_page(page, prev_active):
     return wait_for_active_change(page, prev_active)
 
 
+_TASKBAR_HIDDEN = set()     # window handles we took off the taskbar
+
+
+def set_taskbar_button(show):
+    """Windows only: remove the hidden scraper Chrome window's taskbar (and Alt+Tab) button,
+    or put it back. Only touches Chrome windows parked off-screen that are NOT minimized, which
+    is how the scraper's window sits; your own Chrome windows (minimized or not) are left alone."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        GWL_EXSTYLE, WS_EX_TOOLWINDOW, WS_EX_APPWINDOW = -20, 0x00000080, 0x00040000
+        SW_HIDE, SW_SHOWNOACTIVATE = 0, 4
+        if show:
+            targets = list(_TASKBAR_HIDDEN)
+            _TASKBAR_HIDDEN.clear()
+        else:
+            targets = []
+
+            @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+            def visit(hwnd, _):
+                cls = ctypes.create_unicode_buffer(64)
+                user32.GetClassNameW(hwnd, cls, 64)
+                if cls.value == "Chrome_WidgetWin_1" and user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd):
+                    r = wintypes.RECT()
+                    user32.GetWindowRect(hwnd, ctypes.byref(r))
+                    if r.left <= -20000 and r.top <= -20000:       # parked off-screen by us
+                        targets.append(hwnd)
+                return True
+            user32.EnumWindows(visit, 0)
+            _TASKBAR_HIDDEN.update(targets)
+        for hwnd in targets:
+            style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            if show:
+                new = (style & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW
+            else:
+                new = (style | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW
+            if new != style:
+                user32.ShowWindow(hwnd, SW_HIDE)              # the taskbar only notices after a hide/show
+                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new)
+                user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+    except Exception as e:
+        detail(f"   (couldn't change Chrome's taskbar button: {e})")
+
+
 def set_chrome_visible(page, visible):
     """Move the scraper's Chrome window on-screen or off-screen (it keeps running either way)."""
     if not (USE_MY_CHROME and HIDE_CHROME):
         return
+    if visible:
+        set_taskbar_button(True)
     try:
         cdp = page.context.new_cdp_session(page)
         win = cdp.send("Browser.getWindowForTarget")["windowId"]
@@ -220,6 +269,9 @@ def set_chrome_visible(page, visible):
         cdp.detach()
     except Exception as e:
         detail(f"   (couldn't {'show' if visible else 'hide'} Chrome: {e})")
+    if not visible:
+        time.sleep(0.2)                  # let Windows register the move before checking positions
+        set_taskbar_button(False)
 
 
 READER_SELECTOR = ".reader__item-wrap, img.reader__item"
