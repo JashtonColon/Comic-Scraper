@@ -1,0 +1,59 @@
+# Builds ComicScraper-Setup.exe on GitHub's Windows machines.
+#  - Every push: the installer is attached to the run (Actions tab -> run -> "Artifacts").
+#  - Push a tag like v1.0.0: it's also published on the Releases page.
+name: Build installer
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade -r requirements.txt pyinstaller
+
+      - name: Build app
+        run: >
+          python -m PyInstaller --noconfirm --clean --windowed
+          --name "Comic Scraper" --icon icon.ico --add-data "icon.ico;."
+          --collect-data playwright gui.py
+
+      - name: Pick version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.${GITHUB_RUN_NUMBER}"; fi
+          echo "APP_VERSION=$v" >> "$GITHUB_ENV"
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+            $env:PATH += ";${env:ProgramFiles(x86)}\Inno Setup 6"
+          }
+          iscc /DAppVersion=$env:APP_VERSION installer.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ComicScraper-Setup
+          path: Output/ComicScraper-Setup.exe
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Output/ComicScraper-Setup.exe

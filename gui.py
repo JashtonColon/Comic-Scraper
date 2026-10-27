@@ -1,39 +1,44 @@
-"""Comic Scraper app window. Double-click "Comic Scraper.bat" (or run: python gui.py)."""
+"""Comic Scraper app window. Run: python gui.py  (or use the installed Comic Scraper app)."""
 import contextlib
 import json
 import os
 import queue
+import sys
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-os.chdir(HERE)  # so relative folders land next to the script
+import main as scraper
 
-import main as scraper  # noqa: E402
-
-SETTINGS_FILE = os.path.join(HERE, "settings.json")
+APP_NAME = "Comic Scraper"
+FROZEN = getattr(sys, "frozen", False)          # True when running as the installed .exe
+CODE_DIR = os.path.dirname(os.path.abspath(__file__))
+RESOURCE_DIR = getattr(sys, "_MEIPASS", CODE_DIR)
+SETTINGS_FILE = os.path.join(scraper.APP_DATA, "settings.json")
+OLD_SETTINGS_FILE = os.path.join(CODE_DIR, "settings.json")   # where earlier versions saved it
 
 DEFAULTS = {
     "start_url": "",
     "start_issue": "1",
     "end_issue": "1",
-    "final_root": os.path.join(HERE, "finalcomics"),
+    "final_root": os.path.join(os.path.expanduser("~"), "Documents", "Comics"),
     "sub_path": "",
     "folder_name": "",
     "filename_prefix": "",
-    "chrome_path": scraper.CHROME_PATH,
-    "chrome_profile": scraper.CHROME_PROFILE,
+    "chrome_path": "",       # "" = find Chrome/Edge automatically
+    "chrome_profile": "",    # "" = app data folder
 }
 
 
 def load_settings():
     data = dict(DEFAULTS)
-    try:
-        with open(SETTINGS_FILE, encoding="utf-8") as f:
-            data.update(json.load(f))
-    except (OSError, ValueError):
-        pass
+    for path in (SETTINGS_FILE, OLD_SETTINGS_FILE):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data.update(json.load(f))
+            break
+        except (OSError, ValueError):
+            continue
     return data
 
 
@@ -61,7 +66,11 @@ class QueueWriter:
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Comic Scraper")
+        self.title(APP_NAME)
+        try:
+            self.iconbitmap(os.path.join(RESOURCE_DIR, "icon.ico"))
+        except Exception:
+            pass
         self.geometry("760x620")
         self.minsize(620, 480)
 
@@ -88,8 +97,15 @@ class App(tk.Tk):
         dl.grid(row=0, column=0, sticky="ew")
         dl.columnconfigure(1, weight=1)
 
-        ttk.Label(dl, text="Link to first issue").grid(row=0, column=0, sticky="w", **pad)
-        ttk.Entry(dl, textvariable=self.vars["start_url"]).grid(row=0, column=1, columnspan=3, sticky="ew", **pad)
+        ttk.Label(dl, text="Link to first issue").grid(row=0, column=0, sticky="nw", **pad)
+        link = ttk.Frame(dl)
+        link.grid(row=0, column=1, columnspan=3, sticky="ew", **pad)
+        link.columnconfigure(0, weight=1)
+        ttk.Entry(link, textvariable=self.vars["start_url"]).grid(row=0, column=0, sticky="ew")
+        self.link_check = ttk.Label(link)
+        self.link_check.grid(row=1, column=0, sticky="w", pady=(2, 0))
+        self.vars["start_url"].trace_add("write", lambda *_: self._check_link())
+        self._check_link()
 
         ttk.Label(dl, text="Issues").grid(row=1, column=0, sticky="w", **pad)
         issues = ttk.Frame(dl)
@@ -142,6 +158,19 @@ class App(tk.Tk):
         sb.pack(side="right", fill="y")
 
     # ---------- helpers ----------
+    def _check_link(self):
+        url = self.vars["start_url"].get().strip()
+        if not url:
+            self.link_check.config(text="Paste the reader link of the first issue you want",
+                                   foreground="gray")
+            return
+        try:
+            series, issue = scraper.parse_reader_url(url)
+            self.link_check.config(text=f"Series {series} · first issue {issue}  ✓", foreground="#2e7d32")
+        except ValueError:
+            self.link_check.config(text="⚠ Not a reader link. It should look like "
+                                        "https://batcave.biz/reader/9264/60124", foreground="#c62828")
+
     def _prefix(self):
         p = self.vars["filename_prefix"].get().strip()
         return p or "".join(self.vars["folder_name"].get().split()) or "Comic"
@@ -162,7 +191,7 @@ class App(tk.Tk):
         self.preview.config(text=f"First file: {example}")
 
     def _pick_root(self):
-        d = filedialog.askdirectory(initialdir=self.vars["final_root"].get() or HERE)
+        d = filedialog.askdirectory(initialdir=self.vars["final_root"].get() or os.path.expanduser("~"))
         if d:
             self.vars["final_root"].set(os.path.normpath(d))
 
@@ -173,7 +202,7 @@ class App(tk.Tk):
         if os.path.isdir(path):
             os.startfile(path)
         else:
-            messagebox.showinfo("Comic Scraper", "That folder doesn't exist yet. It's created on the first download.")
+            messagebox.showinfo(APP_NAME, "That folder doesn't exist yet. It's created on the first download.")
 
     def _log(self, text):
         self.log.configure(state="normal")
@@ -206,20 +235,22 @@ class App(tk.Tk):
     # ---------- actions ----------
     def _start(self):
         s = self._collect()
-        if "/reader/" not in s["start_url"]:
-            messagebox.showerror("Comic Scraper", "Paste the link to the first issue's reader page.\n"
+        try:
+            scraper.parse_reader_url(s["start_url"])
+        except ValueError:
+            messagebox.showerror(APP_NAME, "Paste the link to the first issue's reader page.\n"
                                  "Example: https://batcave.biz/reader/9264/60124")
             return
         if not s["folder_name"]:
-            messagebox.showerror("Comic Scraper", "Give the comic a name (used for its folder).")
+            messagebox.showerror(APP_NAME, "Give the comic a name (used for its folder).")
             return
         try:
             start, end = int(s["start_issue"]), int(s["end_issue"])
         except ValueError:
-            messagebox.showerror("Comic Scraper", "Issue numbers must be whole numbers.")
+            messagebox.showerror(APP_NAME, "Issue numbers must be whole numbers.")
             return
         if end < start:
-            messagebox.showerror("Comic Scraper", "The last issue can't be before the first issue.")
+            messagebox.showerror(APP_NAME, "The last issue can't be before the first issue.")
             return
 
         save_settings(s)
@@ -228,7 +259,7 @@ class App(tk.Tk):
         scraper.START_URL = s["start_url"]
         scraper.START_ISSUE = start
         scraper.END_ISSUE = end
-        scraper.FINAL_ROOT = s["final_root"] or DEFAULTS["final_root"]
+        scraper.FINAL_ROOT = os.path.abspath(os.path.expanduser(s["final_root"] or DEFAULTS["final_root"]))
         scraper.SUB_PATH = s["sub_path"]
         scraper.FOLDER_NAME = s["folder_name"]
         scraper.FILENAME_PREFIX = self._prefix()
@@ -268,25 +299,39 @@ class App(tk.Tk):
         f.pack(fill="both", expand=True)
         f.columnconfigure(1, weight=1)
 
-        ttk.Label(f, text="Chrome location").grid(row=0, column=0, sticky="w", padx=6, pady=6)
+        ttk.Label(f, text="Browser location").grid(row=0, column=0, sticky="w", padx=6, pady=6)
         ttk.Entry(f, textvariable=self.vars["chrome_path"], width=60).grid(row=0, column=1, sticky="ew", padx=6)
 
         def pick_chrome():
-            p = filedialog.askopenfilename(title="Find chrome.exe",
-                                           filetypes=[("Chrome", "chrome.exe"), ("Programs", "*.exe")])
+            p = filedialog.askopenfilename(title="Find chrome.exe or msedge.exe",
+                                           filetypes=[("Browser", "chrome.exe msedge.exe"), ("Programs", "*.exe")])
             if p:
                 self.vars["chrome_path"].set(os.path.normpath(p))
         ttk.Button(f, text="Browse…", command=pick_chrome).grid(row=0, column=2, padx=6)
 
-        ttk.Label(f, text="Scraper Chrome profile").grid(row=1, column=0, sticky="w", padx=6, pady=6)
+        ttk.Label(f, text="Browser profile folder").grid(row=1, column=0, sticky="w", padx=6, pady=6)
         ttk.Entry(f, textvariable=self.vars["chrome_profile"], width=60).grid(row=1, column=1, sticky="ew", padx=6)
 
         ttk.Checkbutton(f, text="Run Chrome hidden (it pops up only if you need to click a check)",
                         variable=self.hide_chrome).grid(row=3, column=1, sticky="w", padx=6, pady=6)
 
-        ok = os.path.exists(self.vars["chrome_path"].get())
-        ttk.Label(f, text="✓ Chrome found" if ok else "⚠ Chrome not found at that location",
-                  foreground="green" if ok else "red").grid(row=2, column=1, sticky="w", padx=6)
+        status = ttk.Label(f)
+        status.grid(row=2, column=1, sticky="w", padx=6)
+
+        def refresh(*_):
+            typed = self.vars["chrome_path"].get().strip()
+            if typed and not os.path.exists(typed):
+                status.config(text="⚠ Nothing found at that location", foreground="#c62828")
+                return
+            found = typed or scraper.find_browser()
+            if found:
+                how = "" if typed else " (found automatically - leave the box empty)"
+                status.config(text=f"✓ Using {found}{how}", foreground="#2e7d32")
+            else:
+                status.config(text="⚠ Couldn't find Chrome or Edge - click Browse", foreground="#c62828")
+        trace = self.vars["chrome_path"].trace_add("write", refresh)
+        win.bind("<Destroy>", lambda e: e.widget is win and self.vars["chrome_path"].trace_remove("write", trace))
+        refresh()
 
         def done():
             save_settings(self._collect())

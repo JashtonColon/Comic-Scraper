@@ -1,0 +1,23 @@
+# Downloaded comics - never upload these
+finalcomics/
+*.cbz
+*.cbr
+
+# Debug output from the scraper
+debug_stuck.png
+debug_stuck.html
+
+# Python junk
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Your personal app settings
+settings.json
+
+# Build output
+build/
+dist/
+Output/
+*.spec
