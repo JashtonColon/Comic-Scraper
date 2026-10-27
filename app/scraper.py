@@ -414,10 +414,16 @@ def download_with_browser(context, url, referer):
     return None, None
 
 
+def _referers(referer, urls):
+    return referer if isinstance(referer, list) else [referer] * len(urls)
+
+
 def fetch_pages(urls, referer, session):
-    """Download all page images with plain HTTP, in parallel. Safe to run in a background thread."""
+    """Download all page images with plain HTTP, in parallel. Safe to run in a background thread.
+    referer is one reader link, or one per image (when several parts are joined into one file)."""
+    refs = _referers(referer, urls)
     with ThreadPoolExecutor(max_workers=PAGE_WORKERS) as ex:
-        return list(ex.map(lambda u: download_with_requests(session, u, referer), urls))
+        return list(ex.map(lambda pair: download_with_requests(session, pair[0], pair[1]), zip(urls, refs)))
 
 
 def save_cbz(results, save_path):
@@ -426,9 +432,10 @@ def save_cbz(results, save_path):
         return False, "No valid images downloaded"
     os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
     tmp_path = save_path + ".part"          # so a cancelled download never looks finished
+    width = max(3, len(str(len(valid_pages))))     # 4 digits for joined TPBs over 999 pages
     with zipfile.ZipFile(tmp_path, "w") as archive:
         for idx, (ext, content) in enumerate(valid_pages):
-            archive.writestr(f"{str(idx + 1).zfill(3)}{ext}", content)
+            archive.writestr(f"{str(idx + 1).zfill(width)}{ext}", content)
     os.replace(tmp_path, save_path)
     missing = len(results) - len(valid_pages)
     note = f", {missing} missing" if missing else ""
@@ -437,27 +444,60 @@ def save_cbz(results, save_path):
 
 def retry_in_browser(results, urls, reader_url, context):
     """Pages plain HTTP couldn't get are fetched through Chrome itself (main thread only)."""
+    refs = _referers(reader_url, urls)
     failed = [i for i, r in enumerate(results) if r[1] is None]
     for n, i in enumerate(failed, 1):
         detail(f"Browser retry {n}/{len(failed)}")
-        results[i] = download_with_browser(context, urls[i], reader_url)
+        results[i] = download_with_browser(context, urls[i], refs[i])
     return results
+
+
+def collect_parts(page, reader_urls, first_load=False):
+    """Image links for one comic that may be split into parts on Batcave ("(Part 1)", "(Part 2)"...).
+    Returns (urls, referers) with every part's pages in order."""
+    if isinstance(reader_urls, str):
+        reader_urls = [reader_urls]
+    urls, refs = [], []
+    for n, reader in enumerate(reader_urls, 1):
+        detail(f"   part {n}/{len(reader_urls)}: {reader}" if len(reader_urls) > 1 else f"   {reader}")
+        part = collect_image_urls(page, reader, first_load)
+        first_load = False
+        if not part:
+            raise ValueError("No image URLs found" + (f" in part {n}" if len(reader_urls) > 1 else ""))
+        urls += part
+        refs += [reader] * len(part)
+    return urls, refs
+
+
+def combine_cbz(part_paths, save_path):
+    """Join already-downloaded part files into one .cbz (pages renumbered in order)."""
+    tmp_path = save_path + ".part"
+    n = 0
+    with zipfile.ZipFile(tmp_path, "w") as out:
+        for p in part_paths:
+            with zipfile.ZipFile(p) as z:
+                for name in sorted(z.namelist()):
+                    if name.endswith("/"):
+                        continue
+                    n += 1
+                    out.writestr(f"{str(n).zfill(4)}{os.path.splitext(name)[1]}", z.read(name))
+    os.replace(tmp_path, save_path)
+    return n
 
 
 def download_issue(reader_url, save_path, page, context, user_agent, first_load=False):
     """Download one issue from its reader link into a .cbz at save_path.
     Returns (ok, info) where info is e.g. "Pages: 25" or an error message."""
-    detail(f"   {reader_url}")
     try:
-        urls = collect_image_urls(page, reader_url, first_load)
+        urls, refs = collect_parts(page, reader_url, first_load)
     except PWTimeout:
         return False, "Reader never loaded"
-    if not urls:
-        return False, "No image URLs found"
+    except ValueError as e:
+        return False, str(e)
     detail(f"Downloading {len(urls)} pages...")
-    results = fetch_pages(urls, reader_url, make_session(context, user_agent))
+    results = fetch_pages(urls, refs, make_session(context, user_agent))
     detail(f"Fast download: {sum(1 for r in results if r[1] is not None)}/{len(urls)} OK")
-    return save_cbz(retry_in_browser(results, urls, reader_url, context), save_path)
+    return save_cbz(retry_in_browser(results, urls, refs, context), save_path)
 
 
 class Pipeline:
@@ -473,18 +513,17 @@ class Pipeline:
     def add(self, label, reader_url, save_path, page, first_load=False):
         """Collect the image links now (needs Chrome), download them in the background.
         Returns False if the issue failed before downloading started."""
-        detail(f"   {reader_url}")
         try:
-            urls = collect_image_urls(page, reader_url, first_load)
+            urls, refs = collect_parts(page, reader_url, first_load)
         except PWTimeout:
             self.on_done(label, False, "Reader never loaded")
             return False
-        if not urls:
-            self.on_done(label, False, "No image URLs found")
+        except ValueError as e:
+            self.on_done(label, False, str(e))
             return False
         session = make_session(self.context, self.user_agent)
-        fut = self.ex.submit(fetch_pages, urls, reader_url, session)
-        self.jobs.append((label, reader_url, save_path, urls, fut, time.time()))
+        fut = self.ex.submit(fetch_pages, urls, refs, session)
+        self.jobs.append((label, refs, save_path, urls, fut, time.time()))
         # don't run too far ahead of the downloads
         while len([j for j in self.jobs if not j[4].done()]) >= self.ahead:
             time.sleep(0.1)
@@ -643,42 +682,66 @@ def series_entries(page, series_id, start_url, first_load, complete=False):
 
 def all_issue_files(bc):
     """Everything in a series, in a sensible order, with file names:
-    issues by number, then annuals, then named entries (TPBs, specials) as Batcave lists them."""
+    issues by number, then annuals, then named entries (TPBs, specials).
+    A comic Batcave splits into parts ("(Part 1)", "(Part 2)"...) becomes one item with all part links."""
     import readinglist as R
+
     def num_key(n):
         m = re.match(r"(\d+)(.*)", n)
         return (0, int(m.group(1)), m.group(2)) if m else (1, 0, n)
-    regular = [e for e in bc["entries"] if e["explicit"] and not e["annual"]]
-    annuals = [e for e in bc["entries"] if e["explicit"] and e["annual"]]
+
     def natural(t):                                   # "Vol 2" before "Vol 10"
         return [int(p) if p.isdigit() else p.lower() for p in re.split(r"(\d+)", t)]
-    named = sorted((e for e in bc["entries"] if not e["explicit"]), key=lambda e: natural(e["title"]))
+
     out, seen = [], set()
 
-    def add(label, stem, href):
+    def add(label, stem, hrefs):
         stem = R.safe_filename(stem)
         if stem.lower() in seen:                       # two entries with the same name
-            stem = f"{stem} ({href.rstrip('/').split('/')[-1]})"
+            stem = f"{stem} ({hrefs[0].rstrip('/').split('/')[-1]})"
         seen.add(stem.lower())
-        out.append((label, stem, href))
+        out.append((label, stem, hrefs if len(hrefs) > 1 else hrefs[0]))
 
-    for e in sorted(regular, key=lambda e: num_key(e["num"])):
-        n = e["num"]
-        add(f"#{n}", f"{FILENAME_PREFIX}_{n.zfill(3) if n.isdigit() else n}", e["href"])
-    for e in sorted(annuals, key=lambda e: num_key(e["num"])):
-        n = e["num"]
-        add(f"Annual #{n}", f"{FILENAME_PREFIX}_Annual_{n.zfill(2) if n.isdigit() else n}", e["href"])
+    def grouped(entries, key):
+        groups = {}
+        for e in entries:
+            groups.setdefault(key(e), []).append(e)
+        return [(k, [e["href"] for e in sorted(es, key=lambda e: e.get("part") or 0)])
+                for k, es in groups.items()]
+
+    regular = [e for e in bc["entries"] if e["explicit"] and not e["annual"]]
+    annuals = [e for e in bc["entries"] if e["explicit"] and e["annual"]]
+    for n, hrefs in sorted(grouped(regular, lambda e: e["num"]), key=lambda g: num_key(g[0])):
+        add(f"#{n}", f"{FILENAME_PREFIX}_{n.zfill(3) if n.isdigit() else n}", hrefs)
+    for n, hrefs in sorted(grouped(annuals, lambda e: e["num"]), key=lambda g: num_key(g[0])):
+        add(f"Annual #{n}", f"{FILENAME_PREFIX}_Annual_{n.zfill(2) if n.isdigit() else n}", hrefs)
+
     # the series name every entry starts with, e.g. "L.E.G.I.O.N. " or "Uncanny X-Men (1963) "
     titles = [e["title"] for e in bc["entries"]]
     common = os.path.commonprefix(titles) if len(titles) > 1 else ""
     common = common[:common.rfind(" ") + 1] if " " in common else ""
-    for e in named:
-        t = e["title"]
+
+    def short_name(t):
         rest = t[len(common):].strip() if common and t.startswith(common) else t
-        if rest == t and ")" in t:
+        if rest == t and re.match(r"^.+?\(\d{4}[^)]*\)", t):        # "Series (1987) Something"
             rest = t.split(")", 1)[1].strip()
-        rest = rest or t
-        add(rest, f"{FILENAME_PREFIX} - {rest}", e["href"])
+        return R.PART_RE.sub("", rest).strip() or R.PART_RE.sub("", t).strip() or t
+
+    named = [e for e in bc["entries"] if not e["explicit"]]
+    for rest, hrefs in sorted(grouped(named, lambda e: short_name(e["title"])), key=lambda g: natural(g[0])):
+        add(rest, f"{FILENAME_PREFIX} - {rest}", hrefs)
+    return out
+
+
+def parts_by_number(entries):
+    """{issue number: reader link}, or a list of links in order if Batcave split it into parts."""
+    groups = {}
+    for e in entries:
+        groups.setdefault(e["num"], []).append(e)
+    out = {}
+    for num, es in groups.items():
+        parted = [e for e in es if e.get("part")]
+        out[num] = [e["href"] for e in sorted(parted, key=lambda e: e["part"])] if len(parted) > 1 else es[0]["href"]
     return out
 
 
@@ -692,10 +755,7 @@ def issue_links_for_range(page, series_id, start_url, first_load):
     entries = [e for e in bc["entries"] if e["explicit"]]
     if series_page_url(start_url):
         # series page: the boxes are real issue numbers, "1 to 10" = issues #1-#10
-        by_num = {}
-        for e in entries:
-            if not e["annual"]:
-                by_num.setdefault(e["num"], e["href"])
+        by_num = parts_by_number([e for e in entries if not e["annual"]])
         links = {n: by_num[str(n)] for n in range(START_ISSUE, END_ISSUE + 1) if str(n) in by_num}
         missing = [f"#{n}" for n in range(START_ISSUE, END_ISSUE + 1) if str(n) not in by_num]
         detail(f"   Read {len(entries)} issues from Batcave's series page")
@@ -704,10 +764,7 @@ def issue_links_for_range(page, series_id, start_url, first_load):
     start = next((e for e in entries if e["href"].rstrip("/").split("/")[-1] == start_id), None)
     if not start or not re.fullmatch(r"\d+", start["num"]):
         return None, None
-    by_num = {}
-    for e in entries:
-        if e["annual"] == start["annual"]:
-            by_num.setdefault(e["num"], e["href"])
+    by_num = parts_by_number([e for e in entries if e["annual"] == start["annual"]])
     first_num = int(start["num"])
     links, missing = {}, []
     for k in range(END_ISSUE - START_ISSUE + 1):
@@ -718,6 +775,19 @@ def issue_links_for_range(page, series_id, start_url, first_load):
             missing.append(f"#{n}")
     detail(f"   Read {len(entries)} issues from Batcave's list; starting at issue #{first_num}")
     return links, missing
+
+
+def merge_downloaded_parts(folder, stem, count, save_path):
+    """Earlier versions saved each part separately ("book1 - 1 (Part 1).cbz" ...). If all of them
+    are there, join them into one file without downloading again, then remove the parts."""
+    parts = [os.path.join(folder, f"{stem} (Part {n}){ARCHIVE_EXT}") for n in range(1, count + 1)]
+    if not all(os.path.exists(p) for p in parts):
+        return False
+    pages = combine_cbz(parts, save_path)
+    for p in parts:
+        os.remove(p)
+    print(f"Joined {count} parts into {os.path.basename(save_path)} ({pages} pages)")
+    return True
 
 
 def run_all(page, series_id, pipeline):
@@ -733,7 +803,7 @@ def run_all(page, series_id, pipeline):
                  "annuals": sum(1 for f in files if f[0].startswith("Annual")),
                  "others (TPBs, specials)": sum(1 for f in files if not f[0].startswith(("#", "Annual")))}
         print(f"Batcave lists {len(files)} entries: " + ", ".join(f"{v} {k}" for k, v in kinds.items() if v))
-        skipped, first = 0, False
+        skipped, first, merged = 0, False, 0
         for n, (label, stem, href) in enumerate(files, 1):
             if STOP_REQUESTED:
                 print("Stopped by user")
@@ -742,9 +812,14 @@ def run_all(page, series_id, pipeline):
             if os.path.exists(path):
                 skipped += 1
                 continue
+            if isinstance(href, list) and merge_downloaded_parts(final_dir, stem, len(href), path):
+                merged += 1
+                continue
             new_issue_log()
             print(f"[{n}/{len(files)}] {label}...")
             pipeline.add(label, href, path, page, first)
+        if merged:
+            print(f"Joined {merged} comics from parts you'd already downloaded")
         if skipped:
             print(f"Skipped {skipped} already downloaded")
     finally:

@@ -768,6 +768,15 @@ def batcave_key(title):
     return annual_series, "1"
 
 
+PART_RE = re.compile(r"\s*\(\s*part\s*(\d+)\s*\)", re.I)
+
+
+def part_of(title):
+    """'book1 1 (Part 2)' -> 2: Batcave splits some big TPBs into parts."""
+    m = PART_RE.search(title)
+    return int(m.group(1)) if m else None
+
+
 def issue_map(issues):
     """Batcave issue links -> entries with their annual flag and number. Entries with no number
     in their name ('Free Comic Book Day 2018 Overwatch', one-shots called 'Full') are 'named'."""
@@ -775,7 +784,8 @@ def issue_map(issues):
     for title, href in issues:
         annual, num = batcave_key(title)
         explicit = bool(re.search(r"annual\s*#?\s*\d|\bissue\s*#?\s*\w|#\s*\d", title, re.I))
-        entries.append({"title": title, "href": href, "annual": annual, "num": num, "explicit": explicit})
+        entries.append({"title": title, "href": href, "annual": annual, "num": num, "explicit": explicit,
+                        "part": part_of(title)})
     words = [norm_title(e["title"]).split() for e in entries]
     prefix = []                       # words every entry starts with, e.g. "free comic book day 2018"
     for column in zip(*words) if len(words) > 1 else []:
@@ -804,6 +814,9 @@ def lookup(item, group, bc):
         hits = [e for e in entries if e["explicit"] and e["annual"] == bool(group.get("annual")) and e["num"] == num]
         if len(hits) == 1:
             return hits[0]["href"]
+        parted = [e for e in hits if e.get("part")]
+        if len(parted) > 1:               # split into parts on Batcave: download all, as one file
+            return [e["href"] for e in sorted(parted, key=lambda e: e["part"])]
         if len(hits) > 1:                 # same number twice (variants): take the closest name
             return max(hits, key=lambda e: _name_overlap(item["title"], e["title"], bc["prefix"]))["href"]
     named = [e for e in entries if not e["explicit"]]
@@ -816,6 +829,10 @@ def lookup(item, group, bc):
         title = re.sub(r"\s*#\s*\S+\s*$", "", item["title"])
         best = max(named, key=lambda e: _name_overlap(title, e["title"], bc["prefix"]))
         if _name_overlap(title, best["title"], bc["prefix"]) >= 0.6:
+            if best.get("part"):          # gather all parts with the same name
+                base = PART_RE.sub("", best["title"]).strip()
+                parts = [e for e in named if e.get("part") and PART_RE.sub("", e["title"]).strip() == base]
+                return [e["href"] for e in sorted(parts, key=lambda e: e["part"])]
             return best["href"]
     if group["count"] == 1 and len(entries) == 1:   # one-shot: whatever the single issue is
         return entries[0]["href"]
