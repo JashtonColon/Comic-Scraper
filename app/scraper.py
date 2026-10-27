@@ -108,6 +108,28 @@ def parse_reader_url(url):
     return series, int(issue)
 
 
+SERIES_PAGE_RE = re.compile(r"^https?://[^/]+/(\d+)-[^/?#]+\.html", re.I)
+
+
+def parse_batcave_link(url):
+    """A Batcave link of either kind:
+         series page  https://batcave.biz/7303-action-comics-1938.html  -> ("series", "7303", None)
+         issue        https://batcave.biz/reader/9264/60124             -> ("reader", "9264", 60124)
+       Raises ValueError for anything else."""
+    url = url.strip()
+    m = SERIES_PAGE_RE.match(url)
+    if m:
+        return "series", m.group(1), None
+    series, issue = parse_reader_url(url)
+    return "reader", series, issue
+
+
+def series_page_url(url):
+    """Just the series page address, without '#chapters' and the like."""
+    m = SERIES_PAGE_RE.match(url.strip())
+    return m.group(0) if m else None
+
+
 # ---- output: step-by-step detail is held back unless VERBOSE or something goes wrong ----
 _held = []
 _show_all = False
@@ -601,6 +623,10 @@ def series_entries(page, series_id, start_url, first_load, complete=False):
     or None if the list can't be read. complete=True prefers the full series page over any
     issue list shown on the reader page itself."""
     import readinglist as R          # shares the series-page reader with reading lists
+    series_url = series_page_url(start_url)
+    if series_url:                   # they pasted the series page itself
+        issues = R.batcave_series_issues(page, series_url, first_load)
+        return R.issue_map(issues) if issues else None
     page.goto(start_url, wait_until="domcontentloaded", timeout=60000)
     try:
         wait_for_reader(page, first_load)
@@ -664,6 +690,16 @@ def issue_links_for_range(page, series_id, start_url, first_load):
     if not bc:
         return None, None
     entries = [e for e in bc["entries"] if e["explicit"]]
+    if series_page_url(start_url):
+        # series page: the boxes are real issue numbers, "1 to 10" = issues #1-#10
+        by_num = {}
+        for e in entries:
+            if not e["annual"]:
+                by_num.setdefault(e["num"], e["href"])
+        links = {n: by_num[str(n)] for n in range(START_ISSUE, END_ISSUE + 1) if str(n) in by_num}
+        missing = [f"#{n}" for n in range(START_ISSUE, END_ISSUE + 1) if str(n) not in by_num]
+        detail(f"   Read {len(entries)} issues from Batcave's series page")
+        return links, missing
     start_id = start_url.split("#")[0].split("?")[0].rstrip("/").split("/")[-1]
     start = next((e for e in entries if e["href"].rstrip("/").split("/")[-1] == start_id), None)
     if not start or not re.fullmatch(r"\d+", start["num"]):
@@ -723,10 +759,11 @@ def run():
     print(f"Saving to: {os.path.join(FINAL_ROOT, SUB_PATH or '', FOLDER_NAME)}")
 
     try:
-        series_id, start_issue_id = parse_reader_url(START_URL)
+        kind, series_id, start_issue_id = parse_batcave_link(START_URL)
     except ValueError:
         print(f"That link doesn't look right: {START_URL}")
-        print("   It should look like https://batcave.biz/reader/9264/60124")
+        print("   Paste a series page like https://batcave.biz/7303-action-comics-1938.html")
+        print("   or an issue like https://batcave.biz/reader/9264/60124")
         return
 
     try:
@@ -741,6 +778,9 @@ def run():
                 run_all(page, series_id, pipeline)
                 return
             links, missing = issue_links_for_range(page, series_id, START_URL, True)
+            if links is None and kind == "series":
+                problem("Couldn't read the issue list from that series page.")
+                return
             if links is None:
                 problem("Couldn't read this series' issue list from Batcave, so counting issue IDs up by one. "
                         "Some series skip IDs, so check that the issues are the right ones.")

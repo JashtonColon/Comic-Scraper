@@ -161,7 +161,7 @@ class App(tk.Tk):
         pad = {"padx": 8, "pady": 4}
         dl.columnconfigure(1, weight=1)
 
-        ttk.Label(dl, text="Link to first issue").grid(row=0, column=0, sticky="nw", **pad)
+        ttk.Label(dl, text="Series page or first issue").grid(row=0, column=0, sticky="nw", **pad)
         link = ttk.Frame(dl)
         link.grid(row=0, column=1, columnspan=3, sticky="ew", **pad)
         link.columnconfigure(0, weight=1)
@@ -271,14 +271,20 @@ class App(tk.Tk):
     def _check_link(self):
         url = self.vars["start_url"].get().strip()
         if not url:
-            self.link_check.config(text="Paste the reader link of the first issue you want",
+            self.link_check.config(text="Paste a series page, or the reader link of the first issue you want",
                                    foreground="gray")
             return
         try:
-            series, issue = scraper.parse_reader_url(url)
-            self.link_check.config(text=f"Looks good: series {series}, first issue {issue}", foreground="#2e7d32")
+            kind, series, issue = scraper.parse_batcave_link(url)
+            if kind == "series":
+                self.link_check.config(text=f"Looks good: series page {series} (the issue numbers below are "
+                                            f"real issue numbers)", foreground="#2e7d32")
+            else:
+                self.link_check.config(text=f"Looks good: issue link, series {series}, starting at reader {issue}",
+                                       foreground="#2e7d32")
         except ValueError:
-            self.link_check.config(text="Not a reader link. It should look like "
+            self.link_check.config(text="Not a Batcave link. Use a series page like "
+                                        "https://batcave.biz/7303-action-comics-1938.html or an issue like "
                                         "https://batcave.biz/reader/9264/60124", foreground="#c62828")
 
     def _toggle_all(self):
@@ -427,10 +433,11 @@ class App(tk.Tk):
     def _start(self):
         s = self._collect()
         try:
-            scraper.parse_reader_url(s["start_url"])
+            scraper.parse_batcave_link(s["start_url"])
         except ValueError:
-            messagebox.showerror(APP_NAME, "Paste the link to the first issue's reader page.\n"
-                                 "Example: https://batcave.biz/reader/9264/60124")
+            messagebox.showerror(APP_NAME, "Paste the series page or the first issue's reader link.\n"
+                                 "Examples:\nhttps://batcave.biz/7303-action-comics-1938.html\n"
+                                 "https://batcave.biz/reader/9264/60124")
             return
         if not s["folder_name"]:
             messagebox.showerror(APP_NAME, "Give the comic a name (used for its folder).")
