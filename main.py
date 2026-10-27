@@ -27,6 +27,7 @@ CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 CHROME_PROFILE = r"C:\chrome-scraper"
 
 USE_MY_CHROME = True     # True = open/reuse that normal Chrome window (gets past Cloudflare)
+HIDE_CHROME = True       # True = keep the Chrome window off-screen; it pops up only for a "verify you are human" check
 DEBUG_PORT = 9222        # only change if something else uses this port
 HEADLESS = False         # only used when USE_MY_CHROME = False
 
@@ -35,6 +36,7 @@ HEADLESS = False         # only used when USE_MY_CHROME = False
 #  ADVANCED  -  usually no need to touch
 # =====================================================================
 
+VERBOSE = False          # True = show every step; False = one line per issue (details only on problems)
 SITE_URL = "https://batcave.biz"
 PAGE_WORKERS = 8         # parallel image downloads per issue
 STEP_DELAY = 0.3         # seconds between page turns (lower = faster)
@@ -56,6 +58,36 @@ import zipfile
 import requests
 from concurrent.futures import ThreadPoolExecutor
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+
+
+# ---- output: step-by-step detail is held back unless VERBOSE or something goes wrong ----
+_held = []
+_show_all = False
+
+
+def detail(msg):
+    """A step-by-step line: shown in verbose mode, otherwise kept in case of a problem."""
+    if VERBOSE or _show_all:
+        print(msg)
+    else:
+        _held.append(msg)
+
+
+def problem(msg):
+    """Something went wrong: show what led up to it, then the problem itself."""
+    global _show_all
+    if not VERBOSE and not _show_all:
+        for line in _held:
+            print(line)
+    _held.clear()
+    _show_all = True       # keep showing detail for the rest of this issue
+    print(msg)
+
+
+def new_issue_log():
+    global _show_all
+    _held.clear()
+    _show_all = False
 
 
 # Reads every page slot in the reader and whatever image URL it currently has
@@ -97,20 +129,63 @@ def turn_page(page, prev_active):
     return wait_for_active_change(page, prev_active)
 
 
+def set_chrome_visible(page, visible):
+    """Move the scraper's Chrome window on-screen or off-screen (it keeps running either way)."""
+    if not (USE_MY_CHROME and HIDE_CHROME):
+        return
+    try:
+        cdp = page.context.new_cdp_session(page)
+        win = cdp.send("Browser.getWindowForTarget")["windowId"]
+        cdp.send("Browser.setWindowBounds", {"windowId": win, "bounds": {"windowState": "normal"}})
+        if visible:
+            bounds = {"left": 100, "top": 60, "width": 1280, "height": 900}
+        else:
+            bounds = {"left": -32000, "top": -32000, "width": 1280, "height": 900}
+        cdp.send("Browser.setWindowBounds", {"windowId": win, "bounds": bounds})
+        if visible:
+            page.bring_to_front()
+        cdp.detach()
+    except Exception as e:
+        detail(f"   (couldn't {'show' if visible else 'hide'} Chrome: {e})")
+
+
+READER_SELECTOR = ".reader__item-wrap, img.reader__item"
+
+
+def wait_for_reader(page, first_load):
+    """Wait for the comic to load. If it doesn't show up quickly while Chrome is hidden,
+    it's almost always a Cloudflare check, so show the window for the user to click."""
+    long_wait = 90000 if first_load else 45000
+    if not (USE_MY_CHROME and HIDE_CHROME):
+        page.wait_for_selector(READER_SELECTOR, timeout=long_wait)
+        return
+    try:
+        page.wait_for_selector(READER_SELECTOR, timeout=12000)
+        return
+    except PWTimeout:
+        pass
+    print("🔓 Chrome needs you: click the 'verify you are human' box in the window that just popped up.")
+    set_chrome_visible(page, True)
+    try:
+        page.wait_for_selector(READER_SELECTOR, timeout=max(long_wait, 120000))
+        print("   ✔️  Thanks! Hiding Chrome again.")
+    finally:
+        set_chrome_visible(page, False)
+
+
 def collect_image_urls(page, url, first_load=False):
-    print("   🌐 Opening reader...")
+    detail("   🌐 Opening reader...")
     page.goto(url, wait_until="domcontentloaded", timeout=60000)
     # Long wait on the very first load in case a Cloudflare check needs solving
-    print("   ⏳ Waiting for reader pages to appear...")
+    detail("   ⏳ Waiting for reader pages to appear...")
     try:
-        page.wait_for_selector(".reader__item-wrap, img.reader__item",
-                               timeout=90000 if first_load else 45000)
+        wait_for_reader(page, first_load)
     except PWTimeout:
         page.screenshot(path=DEBUG_SCREENSHOT, full_page=True)
         with open(DEBUG_HTML, "w", encoding="utf-8") as f:
             f.write(page.content())
-        print(f"   📸 Reader didn't load. Page title: '{page.title()}'")
-        print(f"   📸 Saved {DEBUG_SCREENSHOT} and {DEBUG_HTML} - send them to Claude")
+        problem(f"   📸 Reader didn't load. Page title: '{page.title()}'")
+        problem(f"   📸 Saved {DEBUG_SCREENSHOT} and {DEBUG_HTML} - send them to Claude")
         raise
     time.sleep(1)
 
@@ -124,13 +199,13 @@ def collect_image_urls(page, url, first_load=False):
                 found[num] = src
 
         total = data["total"]
-        print(f"   🔎 On page {data['active']} | image URLs found: {len(found)}/{total}")
+        detail(f"   🔎 On page {data['active']} | image URLs found: {len(found)}/{total}")
         if total and len(found) >= total:
             break
 
         stalls = 0 if len(found) > before else stalls + 1
         if stalls >= MAX_STALLS:
-            print(f"   ⚠️ Stopped flipping at {len(found)}/{total} pages")
+            problem(f"   ⚠️ Stopped flipping at {len(found)}/{total} pages")
             break
 
         if STOP_REQUESTED:
@@ -173,7 +248,7 @@ def normalize_image(data, url):
         return "." + fmt, data
     if fmt is None:
         preview = data[:80].decode("utf-8", "replace").replace("\n", " ") if data else "<empty>"
-        print(f"   ⚠️ Not an image: {url[:70]}... starts with: {preview!r}")
+        problem(f"   ⚠️ Not an image: {url[:70]}... starts with: {preview!r}")
         return None, None
     # webp / avif / gif -> convert to JPEG for reader compatibility
     try:
@@ -188,7 +263,7 @@ def normalize_image(data, url):
         img.save(out, "JPEG", quality=JPEG_QUALITY)
         return ".jpg", out.getvalue()
     except Exception as e:
-        print(f"   ⚠️ Couldn't convert {fmt} page ({e}); saving as-is")
+        problem(f"   ⚠️ Couldn't convert {fmt} page ({e}); saving as-is")
         return "." + fmt, data
 
 
@@ -212,9 +287,9 @@ def download_with_browser(context, url, referer):
         r = context.request.get(url, headers={"Referer": referer}, timeout=15000)
         if r.ok:
             return normalize_image(r.body(), url)
-        print(f"   ⚠️ Image failed: {url[:80]}... (Status: {r.status})")
+        problem(f"   ⚠️ Image failed: {url[:80]}... (Status: {r.status})")
     except Exception as e:
-        print(f"   ⚠️ Image error: {url[:80]}... ({e})")
+        problem(f"   ⚠️ Image error: {url[:80]}... ({e})")
     return None, None
 
 
@@ -229,7 +304,9 @@ def process_issue(issue_num, series_id, start_issue_id, page, context, user_agen
 
     issue_id = start_issue_id + (issue_num - START_ISSUE)
     active_url = f"{SITE_URL}/reader/{series_id}/{issue_id}"
-    print(f"📖 Issue {issue_num}: {active_url}")
+    new_issue_log()
+    print(f"📖 Issue {issue_num} of {END_ISSUE}...")
+    detail(f"   {active_url}")
 
     try:
         urls = collect_image_urls(page, active_url, first_load)
@@ -239,17 +316,17 @@ def process_issue(issue_num, series_id, start_issue_id, page, context, user_agen
         return f"❌ No image URLs found for issue {issue_num}"
 
     # Fast path: parallel downloads with the browser's cookies
-    print(f"   ⬇️  Downloading {len(urls)} pages...")
+    detail(f"   ⬇️  Downloading {len(urls)} pages...")
     session = make_session(context, user_agent)
     with ThreadPoolExecutor(max_workers=PAGE_WORKERS) as ex:
         results = list(ex.map(lambda u: download_with_requests(session, u, active_url), urls))
 
     failed = [i for i, r in enumerate(results) if r[1] is None]
-    print(f"   ✔️  Fast download: {len(urls) - len(failed)}/{len(urls)} OK")
+    detail(f"   ✔️  Fast download: {len(urls) - len(failed)}/{len(urls)} OK")
 
     # Fallback: anything that failed gets retried through the browser itself
     for n, i in enumerate(failed, 1):
-        print(f"   🔁 Browser retry {n}/{len(failed)}")
+        detail(f"   🔁 Browser retry {n}/{len(failed)}")
         results[i] = download_with_browser(context, urls[i], active_url)
 
     valid_pages = [p for p in results if p[1] is not None]
@@ -272,7 +349,7 @@ def run():
     """Run a full scrape using the settings at the top of this file (or the ones the app set)."""
     global STOP_REQUESTED
     STOP_REQUESTED = False
-    print(f"📡 Starting Scrape. Nested Path: {os.path.join(FINAL_ROOT, SUB_PATH or '', FOLDER_NAME)}")
+    print(f"📡 Saving to: {os.path.join(FINAL_ROOT, SUB_PATH or '', FOLDER_NAME)}")
 
     try:
         parts = START_URL.split("#")[0].split("?")[0].strip().strip("/").split("/")
@@ -293,9 +370,20 @@ def run():
                 if not os.path.exists(CHROME_PATH):
                     print(f"❌ Chrome not found at {CHROME_PATH} - fix the Chrome location in Settings")
                     return
-                print("🚀 Opening Chrome... if you see a 'verify you are human' check, click it.")
-                subprocess.Popen([CHROME_PATH, f"--remote-debugging-port={DEBUG_PORT}",
-                                  f"--user-data-dir={CHROME_PROFILE}", SITE_URL + "/"])
+                if HIDE_CHROME:
+                    detail("🚀 Starting Chrome in the background...")
+                else:
+                    print("🚀 Opening Chrome... if you see a 'verify you are human' check, click it.")
+                args = [CHROME_PATH, f"--remote-debugging-port={DEBUG_PORT}",
+                        f"--user-data-dir={CHROME_PROFILE}",
+                        # keep pages running at full speed even though the window isn't visible
+                        "--disable-backgrounding-occluded-windows",
+                        "--disable-renderer-backgrounding",
+                        "--disable-background-timer-throttling",
+                        "--no-first-run", "--no-default-browser-check"]
+                if HIDE_CHROME:
+                    args += ["--window-position=-32000,-32000", "--window-size=1280,900"]
+                subprocess.Popen(args + [SITE_URL + "/"])
                 for _ in range(30):
                     time.sleep(1)
                     try:
@@ -313,6 +401,7 @@ def run():
             context = browser.new_context(viewport={"width": 1280, "height": 900})
 
         page = context.new_page()
+        set_chrome_visible(page, False)
         user_agent = page.evaluate("navigator.userAgent")
 
         first = True
@@ -320,7 +409,8 @@ def run():
             if STOP_REQUESTED:
                 print("⏹️  Stopped by user")
                 break
-            print(process_issue(issue, series_id, start_issue_id, page, context, user_agent, first))
+            result = process_issue(issue, series_id, start_issue_id, page, context, user_agent, first)
+            (problem if result.startswith("❌") else print)(result)
             first = False
 
         page.close()   # leaves your Chrome window open
