@@ -82,8 +82,12 @@ class App(tk.Tk):
             self.iconbitmap(os.path.join(RESOURCE_DIR, "icon.ico"))
         except Exception:
             pass
-        self.geometry("900x780")
+        self.geometry("900x780")         # size used when you un-maximize it
         self.minsize(700, 600)
+        try:
+            self.state("zoomed")         # start maximized (full screen, title bar and taskbar still showing)
+        except tk.TclError:
+            self.attributes("-zoomed", True)   # same thing on Linux
 
         self.settings = load_settings()
         self.verbose = tk.BooleanVar(value=bool(self.settings.pop("verbose", False)))
