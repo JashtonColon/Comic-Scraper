@@ -58,6 +58,12 @@ def split_title(full):
     return full.strip(), "1"
 
 
+def gtitle(group):
+    """The series title as League of Comic Geeks writes it, for searching and comparing.
+    Rows split by volume are named "Title (year)" but search as plain "Title"."""
+    return group.get("title") or group["name"]
+
+
 def is_annual(series_name):
     return bool(re.search(r"\bannual\b", series_name, re.I))
 
@@ -73,6 +79,30 @@ def year_of(ts):
         return datetime.datetime.utcfromtimestamp(int(ts)).year
     except (TypeError, ValueError, OverflowError, OSError):
         return None
+
+
+def is_out(item, now=None):
+    """Has this issue been released? (League of Comic Geeks lists upcoming issues with future dates.)
+    Issues with no date count as out."""
+    d = item.get("date")
+    if not d:
+        return True
+    try:
+        return int(d) <= (now or time.time())
+    except (TypeError, ValueError):
+        return True
+
+
+def release_text(item):
+    try:
+        return datetime.datetime.utcfromtimestamp(int(item["date"])).strftime("%b %d, %Y")
+    except (KeyError, TypeError, ValueError, OverflowError, OSError):
+        return "soon"
+
+
+def series_items(plan, group, released_only=False):
+    items = [it for it in plan["items"] if it["series"] == group["name"]]
+    return [it for it in items if is_out(it)] if released_only else items
 
 
 def plan_path(plan):
@@ -223,7 +253,9 @@ def load_from_link(page, url):
     plan = build_plan(data["name"], data["items"], {"type": "link", "url": url})
     print(f"Found {len(plan['items'])} issues across {len(plan['groups'])} series.")
     _fill_series_years(page, plan)
-    return merge_saved_matches(plan)
+    plan = merge_saved_matches(plan)
+    split_volumes(page, plan)
+    return plan
 
 
 def _fill_series_years(page, plan):
@@ -242,6 +274,102 @@ def _fill_series_years(page, plan):
                 g["year"] = info["start"]
         except Exception as e:
             detail(f"   (couldn't check {g['name']}: {e})")
+
+
+COMIC_ID_RE = re.compile(r"/comic/(\d+)")
+
+
+def _comic_id(href):
+    m = COMIC_ID_RE.search(href or "")
+    return m.group(1) if m else None
+
+
+def _mixes_volumes(items):
+    """Same title but probably several volumes: an issue number repeats, or the issues span decades."""
+    seen = set()
+    for it in items:
+        if it["num"] in seen:
+            return True
+        seen.add(it["num"])
+    years = [y for y in (year_of(it.get("date")) for it in items) if y]
+    return bool(years) and max(years) - min(years) > 15
+
+
+VOLUME_VERSION = 2    # bump to re-check every row for mixed volumes (older lists marked rows done too early)
+
+
+def split_volumes(page, plan):
+    """League of Comic Geeks calls every volume "The Amazing Spider-Man #1", but Batcave has a
+    series per volume. Look up which LoCG series each issue belongs to and split the row into
+    "The Amazing Spider-Man (1963)", "(1999)", "(2014)"... Needs a League of Comic Geeks page open."""
+    groups = plan["groups"]
+    split_any = False
+    for name in list(groups):
+        g = groups[name]
+        if g.get("volumes_checked") == VOLUME_VERSION:
+            continue
+        items = [it for it in plan["items"] if it["series"] == name]
+        if len(items) < 2 or not _mixes_volumes(items) or not all(it.get("href") for it in items):
+            g["volumes_checked"] = VOLUME_VERSION
+            continue
+        failed = False
+        print(f"   {name}: checking which volume each of its {len(items)} issues is from...")
+        vols, todo = [], list(items)
+        for _ in range(40):
+            if not todo:
+                break
+            try:
+                info = page.evaluate(ISSUE_SERIES_JS, todo[0]["href"])
+                sid = re.search(r"/series/(\d+)", info.get("series") or "")
+                if not sid:
+                    failed = True
+                    break
+                ids, start = set(), None
+                for offset in range(0, 6000, LOCG_PAGE_SIZE):
+                    batch = page.evaluate(SERIES_ISSUES_JS, [sid.group(1), offset])
+                    if batch and start is None:
+                        start = year_of(batch[0].get("date"))     # first issue of the volume
+                    ids |= {_comic_id(b["href"]) for b in batch}
+                    if len(batch) < LOCG_PAGE_SIZE:
+                        break
+            except Exception as e:
+                problem(f"      (couldn't check volumes: {e})")
+                failed = True
+                break
+            mine = [it for it in todo if _comic_id(it["href"]) in ids] or [todo[0]]
+            vols.append((start or info.get("start"), mine))
+            todo = [it for it in todo if it not in mine]
+        if failed and len(vols) < 2:
+            continue                    # leave it unchecked so the next Find tries again
+        if todo:
+            vols.append((None, todo))
+        g["volumes_checked"] = VOLUME_VERSION
+        if len(vols) < 2:
+            continue
+        split_any = True
+        template = dict(g)
+        del groups[name]
+        for start, its in vols:
+            key = f"{name} ({start})" if start else name
+            while key in groups:
+                key += "*"
+            ng = dict(template)
+            ng.update(name=key, title=name, count=len(its), first_href=its[0]["href"], year=start or g.get("year"),
+                      match=None, candidates=[], status="", volumes_checked=VOLUME_VERSION)
+            ng.pop("found", None)
+            ng.pop("missing", None)
+            groups[key] = ng
+            for it in its:
+                it["series"] = key
+        print(f"      -> {len(vols)} volumes: " + ", ".join(str(v[0] or "?") for v in vols))
+    if split_any:
+        # keep the table in reading order of each row's first issue
+        order = {}
+        for it in plan["items"]:
+            order.setdefault(it["series"], it["pos"])
+        plan["groups"] = dict(sorted(groups.items(), key=lambda kv: order.get(kv[0], 0)))
+        add_issue_years(plan)
+    return split_any
 
 
 # ---- pasted text, e.g. "Superman #1-176, #0, #1m, Annual #1-12" ----
@@ -347,7 +475,9 @@ def load_from_text(page, text, name="Reading List"):
         problem(f"   {len(missing)} issues weren't found on League of Comic Geeks: " + ", ".join(missing[:10])
                 + (" ..." if len(missing) > 10 else ""))
     _fill_series_years(page, plan)
-    return merge_saved_matches(plan)
+    plan = merge_saved_matches(plan)
+    split_volumes(page, plan)
+    return plan
 
 
 # =====================================================================
@@ -437,13 +567,23 @@ NEXT_PAGE_JS = r"""
 """
 
 
-ANNUAL_YEAR_RE = re.compile(r"\b((?:19|20)\d\d)\s+annual\b|\bannual\s+((?:19|20)\d\d)\b", re.I)
+ANNUAL_YEAR_RE = re.compile(r"(?:\b((?:19|20)\d\d)|'(\d\d))\s+annual\b|\bannual\s+(?:((?:19|20)\d\d)\b|'(\d\d)\b)", re.I)
+
+
+def full_year(two):
+    """'96 -> 1996, '05 -> 2005"""
+    n = int(two)
+    return str(1900 + n if n >= 30 else 2000 + n)
 
 
 def annual_year(name):
-    """'Mighty Morphin Power Rangers 2018 Annual' -> '2018' (Batcave calls it '_Annual 2018')."""
+    """'Mighty Morphin Power Rangers 2018 Annual' -> '2018' (Batcave calls it '_Annual 2018');
+    "The Amazing Spider-Man '96 Annual" -> '1996' (Batcave: "_Annual '96")."""
     m = ANNUAL_YEAR_RE.search(name)
-    return (m.group(1) or m.group(2)) if m else None
+    if not m:
+        return None
+    four = m.group(1) or m.group(3)
+    return four if four else full_year(m.group(2) or m.group(4))
 
 
 def base_name(name):
@@ -467,7 +607,7 @@ def title_score(a, b):
 
 def score_candidate(group, cand):
     """How well a Batcave series fits a reading-list series (1.0 = same title, right years)."""
-    name = group["name"]
+    name = gtitle(group)
     if group.get("annual") and not is_annual(cand["name"]):
         # Batcave usually keeps annuals inside the main series: "Superman (1987-2006)"
         s = title_score(base_name(name), cand["name"]) - 0.03
@@ -492,7 +632,7 @@ def score_candidate(group, cand):
 
 def search_queries(group):
     """Batcave's search is picky about punctuation, so try a few spellings."""
-    name = group["name"]
+    name = gtitle(group)
     clean = re.sub(r"\s+", " ", re.sub(r"[^\w\s'-]", " ", name.replace("&", " and ").replace(".", ""))).strip()
     year = group.get("first_year") or group.get("year")
     qs = [f"{name} {year}" if year else name, name, clean]
@@ -503,6 +643,9 @@ def search_queries(group):
         qs.append(re.sub(r"^the\s+", "", base_name(clean), flags=re.I))
     if ":" in name:
         qs.append(name.split(":")[0].strip())          # "Newstime: The Life..." -> "Newstime"
+    if "," in name:                                     # "Peter Parker, The Spectacular Spider-Man"
+        after = name.split(",", 1)[1].strip()
+        qs += [f"{after} {year}" if year else after, after]
     out = []
     for q in qs:
         if q and q.lower() not in [o.lower() for o in out]:
@@ -563,11 +706,34 @@ def find_match(page, group, first_load=False):
     return group
 
 
+def _max_number(bc):
+    nums = [float(e["num"]) for e in bc["entries"]
+            if e["explicit"] and not e["annual"] and re.fullmatch(r"-?\d+(\.\d+)?", e["num"])]
+    return max(nums) if nums else None
+
+
+def lookup_with_extras(item, group, bc, extras):
+    """The main Batcave series first. Extra series with the same title (Batcave files the 1998
+    Amazing Spider-Man's #500-700 under the 1963 series) are only used for numbers higher than
+    anything on the main page, so a missing #30 is never filled with a different volume's #30."""
+    found = lookup(item, group, bc)
+    if found or not extras:
+        return found
+    top = _max_number(bc)
+    if top is None or not re.fullmatch(r"\d+(\.\d+)?", item["num"]) or float(item["num"]) <= top:
+        return None
+    for extra in extras:
+        found = lookup(item, group, extra)
+        if found:
+            return found
+    return None
+
+
 def coverage(page, plan, group, url, first_load=False):
     """How many of the list's issues for this series are on that Batcave page: (found, needed)."""
     issues = batcave_series_issues(page, url, first_load)
     bc = issue_map(issues)
-    items = [it for it in plan["items"] if it["series"] == group["name"]]
+    items = series_items(plan, group, released_only=True)
     have = [it for it in items if lookup(it, group, bc)]
     missing = [it["title"] for it in items if it not in have]
     return len(have), len(items), missing
@@ -614,7 +780,8 @@ def verify_match(page, plan, g, first_load=False):
                             next((c.get("title_score", 0) for c in g.get("candidates") or []
                                   if c["url"] == t[1]["url"]), 0) >= cur_ts - 0.01]
     have, best, missing = max(pool, key=strength)
-    need = g["count"]
+    need = len(series_items(plan, g, released_only=True))
+    g["upcoming"] = g["count"] - need
     g["found"] = [have, need]
     g["missing"] = missing[:50]
     if have == 0:
@@ -627,6 +794,29 @@ def verify_match(page, plan, g, first_load=False):
         g["match"] = best
         if g.get("status") != "confirmed":
             g["status"] = "check"
+    # higher numbers Batcave filed under another series with the same title (see lookup_with_extras)
+    g["extra"] = []
+    if missing:
+        items = series_items(plan, g, released_only=True)
+        main = issue_map(batcave_series_issues(page, best["url"]))
+        extras = []
+        for c in g.get("candidates") or []:
+            if c["url"] == best["url"] or c.get("title_score", 0) < 0.96:
+                continue
+            extra = issue_map(batcave_series_issues(page, c["url"]))
+            gained = [it for it in items if not lookup_with_extras(it, g, main, extras)
+                      and lookup_with_extras(it, g, main, extras + [extra])]
+            if gained:
+                extras.append(extra)
+                g["extra"].append({"title": c["title"], "url": c["url"]})
+                detail(f"      +{len(gained)} higher-numbered issues from {c['title']}")
+            if len(g["extra"]) >= 3:
+                break
+        if g["extra"]:
+            still = [it["title"] for it in items if not lookup_with_extras(it, g, main, extras)]
+            have = need - len(still)
+            g["found"] = [have, need]
+            g["missing"] = still[:50]
     cand = next((c for c in g.get("candidates") or [] if c["url"] == best["url"]), {})
     first = g.get("first_year")
     close_year = bool(first and cand.get("year") and abs(cand["year"] - first) <= 1)
@@ -635,10 +825,19 @@ def verify_match(page, plan, g, first_load=False):
         g["status"] = "matched"         # right name (or name + subtitle, same year) and every issue is there
 
 
-CHECK_VERSION = 3     # bump when issue matching changes, so saved counts get redone
+CHECK_VERSION = 6     # bump when issue matching changes, so saved counts get redone
 
 
 def find_on_batcave(page, plan, on_update=None, redo=False):
+    if any(g.get("volumes_checked") != VOLUME_VERSION for g in plan["groups"].values()):
+        print("Checking for series that mix several volumes...")
+        try:
+            page.goto(LOCG_URL + "/", wait_until="domcontentloaded", timeout=60000)
+            S.wait_for_reader(page, True, js_condition="() => document.querySelector('a[href*=\"/comics/\"]')")
+            if split_volumes(page, plan):
+                save_plan(plan)
+        except Exception as e:
+            problem(f"   Couldn't check volumes on League of Comic Geeks: {e}")
     if any("first_year" not in g for g in plan["groups"].values()):
         add_issue_years(plan)          # lists saved by the first version don't have these yet
     if plan.get("check_version") != CHECK_VERSION:
@@ -654,6 +853,19 @@ def find_on_batcave(page, plan, on_update=None, redo=False):
         if S.STOP_REQUESTED:
             print("Stopped by user")
             break
+        released = len(series_items(plan, g, released_only=True))
+        g["upcoming"] = g["count"] - released
+        if not released:
+            if g.get("status") not in ("matched", "confirmed"):
+                g["status"] = "upcoming"
+            g["found"] = [0, 0]
+            detail(f"   [{i}/{len(todo)}] {g['name']}: not out yet")
+            save_plan(plan)
+            if on_update:
+                on_update(g)
+            continue
+        if g.get("status") == "upcoming":
+            g["status"] = ""            # some of it has come out since
         try:
             if redo or g.get("status") not in ("matched", "confirmed"):
                 find_match(page, g, first)
@@ -757,12 +969,13 @@ def batcave_key(title):
          'Superman (1987-2006) Annual #3'         -> (True, '3')
          'Superman Annual (1987) Issue #2'        -> (True, '2')
          'Lex Luthor: The Unauthorized Biography Full'  (one-shot) -> (False, '1')"""
-    m = re.search(r"annual\s*#?\s*(\d+)", title, re.I)
+    m = re.search(r"annual\s*#?\s*('\d\d\b|\d+)", title, re.I)
     if m:
-        return True, norm_num(m.group(1))
+        n = m.group(1)
+        return True, full_year(n[1:]) if n.startswith("'") else norm_num(n)
     annual_series = bool(re.search(r"annual", title, re.I))
-    m = (re.search(r"\bissue\s*#?\s*([0-9][0-9.,/]*[a-zA-Z]?|[0-9]*[a-zA-Z]+[0-9]*)", title, re.I)
-         or re.search(r"#\s*([0-9][0-9.,/]*[a-zA-Z]?)", title))
+    m = (re.search(r"\bissue\s*#?\s*(-?[0-9][0-9.,/]*[a-zA-Z]?|[0-9]*[a-zA-Z]+[0-9]*)", title, re.I)
+         or re.search(r"#\s*(-?[0-9][0-9.,/]*[a-zA-Z]?)", title))
     if m:
         return annual_series, norm_num(m.group(1))
     return annual_series, "1"
@@ -783,7 +996,7 @@ def issue_map(issues):
     entries = []
     for title, href in issues:
         annual, num = batcave_key(title)
-        explicit = bool(re.search(r"annual\s*#?\s*\d|\bissue\s*#?\s*\w|#\s*\d", title, re.I))
+        explicit = bool(re.search(r"annual\s*#?\s*'?\d|\bissue\s*#?\s*-?\w|#\s*-?\d", title, re.I))
         entries.append({"title": title, "href": href, "annual": annual, "num": num, "explicit": explicit,
                         "part": part_of(title)})
     words = [norm_title(e["title"]).split() for e in entries]
@@ -807,9 +1020,18 @@ def lookup(item, group, bc):
     """The reader link on a scanned Batcave series for one list item, or None."""
     entries = bc["entries"]
     nums = [item["num"]]
-    year = annual_year(group["name"]) if group.get("annual") else None
+    year = annual_year(gtitle(group)) if group.get("annual") else None
     if year:
-        nums.insert(0, year)              # "2018 Annual #1" is "_Annual 2018" on Batcave
+        # "2018 Annual #1" is "_Annual 2018" on Batcave; never fall back to plain "Annual #1",
+        # which is a different comic (Amazing Spider-Man Annual #1 is from 1964, not '96)
+        nums = [year]
+        # ...but some volumes number them 1, 2, 3 instead: Amazing Spider-Man (1999) "_Annual 1" is
+        # LoCG's "Annual '99", "_Annual 2" is "Annual 2000". Only when no annual there is named by year.
+        start = (group.get("match") or {}).get("year")
+        annual_nums = [e["num"] for e in entries if e["annual"] and e["explicit"]]
+        if (start and annual_nums and year.isdigit() and int(year) >= int(start)
+                and not any(n.isdigit() and int(n) >= 1900 for n in annual_nums)):
+            nums.append(str(int(year) - int(start) + 1))
     for num in nums:
         hits = [e for e in entries if e["explicit"] and e["annual"] == bool(group.get("annual")) and e["num"] == num]
         if len(hits) == 1:
@@ -834,7 +1056,8 @@ def lookup(item, group, bc):
                 parts = [e for e in named if e.get("part") and PART_RE.sub("", e["title"]).strip() == base]
                 return [e["href"] for e in sorted(parts, key=lambda e: e["part"])]
             return best["href"]
-    if group["count"] == 1 and len(entries) == 1:   # one-shot: whatever the single issue is
+    if group["count"] == 1 and len(entries) == 1 and (not entries[0]["explicit"] or not year):
+        # one-shot: whatever the single issue is ("... Full"); but a year-named annual must match its year
         return entries[0]["href"]
     return None
 
@@ -849,7 +1072,10 @@ def download(page, context, user_agent, plan, root):
     groups = plan["groups"]
     wanted = [it for it in plan["items"] if groups[it["series"]]["include"]]
     width = max(4, len(str(len(plan["items"]))))
-    print(f"Saving {len(wanted)} issues to: {folder}")
+    upcoming = [it for it in wanted if not is_out(it)]
+    wanted = [it for it in wanted if is_out(it)]
+    print(f"Saving {len(wanted)} issues to: {folder}"
+          + (f"  ({len(upcoming)} more aren't out yet and will be picked up on a later run)" if upcoming else ""))
 
     # write the reading order up front so it's there even if you stop early
     with open(os.path.join(folder, "Reading order.txt"), "w", encoding="utf-8") as f:
@@ -884,15 +1110,16 @@ def download(page, context, user_agent, plan, root):
             if not g.get("match"):
                 missing.append(f"{it['title']}  (series not matched on Batcave)")
                 continue
+            for m in [g["match"]] + (g.get("extra") or []):
+                if m["url"] not in maps:
+                    S.new_issue_log()
+                    print(f"Scanning Batcave for {m['title']}...")
+                    issues = batcave_series_issues(page, m["url"], first)
+                    first = False
+                    maps[m["url"]] = issue_map(issues)
+                    detail(f"   {len(issues)} issues listed")
             url = g["match"]["url"]
-            if url not in maps:
-                S.new_issue_log()
-                print(f"Scanning Batcave for {g['match']['title']}...")
-                issues = batcave_series_issues(page, url, first)
-                first = False
-                maps[url] = issue_map(issues)
-                detail(f"   {len(issues)} issues listed")
-            reader = lookup(it, g, maps[url])
+            reader = lookup_with_extras(it, g, maps[url], [maps[m["url"]] for m in g.get("extra") or []])
             if not reader:
                 missing.append(f"{it['title']}  (not on Batcave's {g['match']['title']} page)")
                 continue
@@ -904,14 +1131,18 @@ def download(page, context, user_agent, plan, root):
         pipeline.close()              # wait for the last downloads to finish
 
     report = os.path.join(folder, "Missing issues.txt")
-    if missing or failed:
+    if missing or failed or upcoming:
         with open(report, "w", encoding="utf-8") as f:
             if missing:
                 f.write("Not found on Batcave:\n" + "\n".join(missing) + "\n\n")
             if failed:
-                f.write("Failed to download:\n" + "\n".join(failed) + "\n")
+                f.write("Failed to download:\n" + "\n".join(failed) + "\n\n")
+            if upcoming:
+                f.write("Not out yet (run Download all again after they're released):\n"
+                        + "\n".join(f"{it['title']}  ({release_text(it)})" for it in upcoming) + "\n")
     elif os.path.exists(report):
         os.remove(report)
-    print(f"Done: {saved} downloaded, {skipped} already there, {len(missing)} not found, {len(failed)} failed")
-    if missing or failed:
+    print(f"Done: {saved} downloaded, {skipped} already there, {len(missing)} not found, {len(failed)} failed"
+          + (f", {len(upcoming)} not out yet" if upcoming else ""))
+    if missing or failed or upcoming:
         print(f"   The list is in: {report}")
