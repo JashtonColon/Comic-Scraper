@@ -3,6 +3,7 @@ import contextlib
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import tkinter as tk
@@ -36,6 +37,43 @@ DEFAULTS = {
     "rl_last": "",           # reading list: name of the last list loaded (reopened on start)
     "tab": "0",
 }
+
+INSTALLER_APP_ID = "{6B1E3F2A-8C4D-4E7B-9A51-2F0C7D9E4B13}"   # same AppId as installer/installer.iss
+
+
+def app_version():
+    """'1.2.3' for the installed app (read from Windows' list of installed programs, where the
+    installer records it), the latest git tag when running from source, or 'dev'."""
+    if FROZEN and os.name == "nt":
+        try:
+            import winreg
+            key = rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{INSTALLER_APP_ID}_is1"
+            for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                try:
+                    with winreg.OpenKey(hive, key) as k:
+                        return str(winreg.QueryValueEx(k, "DisplayVersion")[0])
+                except OSError:
+                    continue
+        except Exception:
+            pass
+    if not FROZEN:
+        try:
+            import subprocess
+            out = subprocess.run(["git", "describe", "--tags", "--always"], cwd=CODE_DIR,
+                                 capture_output=True, text=True, timeout=5,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.strip()
+            if out:
+                # "v1.2.3-2-gabc123" -> "1.2.3+2" (2 commits after that release)
+                m = re.match(r"v?(\d+\.\d[\w.]*?)(?:-(\d+)-g[0-9a-f]+)?$", out)
+                if m:
+                    return m.group(1) + (f"+{m.group(2)}" if m.group(2) else "")
+                return f"dev ({out})"
+        except Exception:
+            pass
+    return "dev"
+
+
+APP_VERSION = app_version()
 
 STATUS_TEXT = {"matched": "Matched", "confirmed": "Confirmed", "check": "Check this",
                "not found": "Not found", "": "-"}
@@ -77,7 +115,7 @@ class QueueWriter:
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title(APP_NAME)
+        self.title(f"{APP_NAME} v{APP_VERSION}" if APP_VERSION[0].isdigit() else f"{APP_NAME} ({APP_VERSION})")
         try:
             self.iconbitmap(os.path.join(RESOURCE_DIR, "icon.ico"))
         except Exception:
@@ -136,6 +174,7 @@ class App(tk.Tk):
         self.stop_btn.pack(side="left")
         ttk.Button(btns, text="Open folder", command=self._open_folder).pack(side="left", padx=6)
         ttk.Button(btns, text="Settings", command=self._open_settings).pack(side="right")
+        ttk.Label(btns, text=f"Version {APP_VERSION}", foreground="gray").pack(side="right", padx=(0, 12))
         ttk.Checkbutton(btns, text="Show details", variable=self.verbose,
                         command=self._set_verbose).pack(side="right", padx=10)
 
