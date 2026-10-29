@@ -223,10 +223,10 @@ class App(tk.Tk):
                         variable=self.all_issues, command=self._toggle_all).pack(side="left", padx=(16, 0))
         self._toggle_all()
 
-        ttk.Label(dl, text="Comic name (folder)").grid(row=2, column=0, sticky="w", **pad)
+        ttk.Label(dl, text="Group folder (optional)").grid(row=2, column=0, sticky="w", **pad)
         ttk.Entry(dl, textvariable=self.vars["folder_name"]).grid(row=2, column=1, columnspan=3, sticky="ew", **pad)
 
-        ttk.Label(dl, text="Group folder (optional)").grid(row=3, column=0, sticky="w", **pad)
+        ttk.Label(dl, text="Comic name (folder)").grid(row=3, column=0, sticky="w", **pad)
         ttk.Entry(dl, textvariable=self.vars["sub_path"]).grid(row=3, column=1, columnspan=3, sticky="ew", **pad)
 
         ttk.Label(dl, text="File name prefix (optional)").grid(row=4, column=0, sticky="w", **pad)
