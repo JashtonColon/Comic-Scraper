@@ -76,7 +76,7 @@ def app_version():
 APP_VERSION = app_version()
 
 STATUS_TEXT = {"matched": "Matched", "confirmed": "Confirmed", "check": "Check this",
-               "not found": "Not found", "": "-"}
+               "not found": "Not found", "upcoming": "Not out yet", "": "-"}
 
 
 def load_settings():
@@ -288,6 +288,7 @@ class App(tk.Tk):
         self.tree.tag_configure("check", foreground="#b26a00")
         self.tree.tag_configure("missing", foreground="#c62828")
         self.tree.tag_configure("off", foreground="gray")
+        self.tree.tag_configure("soon", foreground="#1565c0")
         tsb = ttk.Scrollbar(tablef, command=self.tree.yview)
         self.tree.configure(yscrollcommand=tsb.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -519,14 +520,23 @@ class App(tk.Tk):
         self._set_busy(bool(self.worker))
 
     def _refresh_row(self, key):
+        if key not in self.plan["groups"]:
+            return
+        if not self.tree.exists(key) or any(k not in self.plan["groups"] for k in self.tree.get_children()):
+            self._show_plan(self.plan)          # rows were just split by volume: redraw the table in order
+            return
         g = self.plan["groups"][key]
         status = g.get("status") or ""
         match = g["match"]["title"] if g.get("match") else ""
-        found = f"{g['found'][0]}/{g['found'][1]}" if g.get("found") else ""
+        found = f"{g['found'][0]}/{g['found'][1]}" if g.get("found") and g["found"][1] else ""
+        if g.get("upcoming"):
+            found = (found + " " if found else "") + f"+{g['upcoming']} soon"
         partial = bool(g.get("found")) and g["found"][0] < g["found"][1]
         tags = ()
         if not g["include"]:
             tags = ("off",)
+        elif status == "upcoming":
+            tags = ("soon",)
         elif status == "not found":
             tags = ("missing",)
         elif status == "check" or partial:
@@ -542,9 +552,11 @@ class App(tk.Tk):
         ok = sum(1 for g in gs if g.get("status") in ("matched", "confirmed"))
         check = sum(1 for g in gs if g.get("status") == "check")
         missing = sum(1 for g in gs if g.get("status") == "not found")
+        soon = sum(g.get("upcoming") or 0 for g in gs)
+        waiting = sum(1 for g in gs if g.get("status") == "upcoming")
         have = sum(g["found"][0] for g in gs if g.get("found"))
         checked = sum(1 for g in gs if g.get("found"))
-        todo = len(gs) - ok - check - missing
+        todo = len(gs) - ok - check - missing - waiting
         parts = [f"{issues} issues in {len(gs)} series", f"{ok} matched"]
         if checked:
             parts.insert(1, f"{have} issues found on Batcave")
@@ -552,6 +564,8 @@ class App(tk.Tk):
             parts.append(f"{check} to check (orange)")
         if missing:
             parts.append(f"{missing} not found (red)")
+        if soon:
+            parts.append(f"{soon} issues not out yet (blue)")
         if todo:
             parts.append(f"{todo} not searched yet")
         self.rl_summary.config(text=" - ".join(parts) + ".   Double-click a row to change its match.")
@@ -568,6 +582,9 @@ class App(tk.Tk):
         if self.tree.identify_column(event.x) != "#1":
             return
         key = self.tree.identify_row(event.y)
+        if key and key not in self.plan["groups"]:
+            self._show_plan(self.plan)          # an old row that was split by volume
+            return "break"
         if key:
             g = self.plan["groups"][key]
             g["include"] = not g["include"]
@@ -576,6 +593,9 @@ class App(tk.Tk):
 
     def _tree_double(self, event):
         key = self.tree.identify_row(event.y)
+        if key and self.plan and key not in self.plan["groups"]:
+            self._show_plan(self.plan)          # an old row that was split by volume
+            return
         if key and self.plan and self.tree.identify_column(event.x) != "#1":
             MatchDialog(self, key)
 
@@ -607,7 +627,7 @@ class App(tk.Tk):
             with scraper.browser_session() as (page, context, ua):
                 readinglist.find_on_batcave(page, plan, on_update=lambda g: self.on_ui(
                     lambda k=g["name"]: self._rl_changed(k)), redo=redo)
-            self.on_ui(self._refresh_summary)
+            self.on_ui(lambda: self._show_plan(plan))      # rows may have been split by volume
             print("\nCheck any orange or red rows (double-click to fix), then click '3. Download all'.")
         self._run(job)
 
@@ -709,9 +729,11 @@ class MatchDialog(tk.Toplevel):
         ttk.Label(f, text=f"{self.g['name']}{year} - {self.g['count']} issues in the list",
                   font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=2, sticky="w")
 
-        if self.g.get("found"):
+        if self.g.get("found") and self.g["found"][1]:
             have, need = self.g["found"]
-            note = f"The chosen Batcave page has {have} of these {need} issues."
+            note = f"The chosen Batcave page has {have} of the {need} issues that are out."
+            if self.g.get("upcoming"):
+                note += f" {self.g['upcoming']} more aren't released yet."
             if self.g.get("missing"):
                 shown = ", ".join(self.g["missing"][:8]) + (" ..." if len(self.g["missing"]) > 8 else "")
                 note += f" Missing: {shown}"
@@ -801,6 +823,7 @@ class MatchDialog(tk.Toplevel):
         self.g["status"] = "confirmed"
         self.g["include"] = True
         self.g.pop("found", None)          # re-counted on the next "Find on Batcave"
+        self.g.pop("extra", None)
         self.app._rl_changed(self.key)
         self.destroy()
 
