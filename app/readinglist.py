@@ -825,7 +825,7 @@ def verify_match(page, plan, g, first_load=False):
         g["status"] = "matched"         # right name (or name + subtitle, same year) and every issue is there
 
 
-CHECK_VERSION = 6     # bump when issue matching changes, so saved counts get redone
+CHECK_VERSION = 7     # bump when issue matching changes, so saved counts get redone
 
 
 def find_on_batcave(page, plan, on_update=None, redo=False):
@@ -1020,6 +1020,11 @@ def lookup(item, group, bc):
     """The reader link on a scanned Batcave series for one list item, or None."""
     entries = bc["entries"]
     nums = [item["num"]]
+    m = re.search(r"#\s*(\d+(?:\.\d+)?)\b", gtitle(group))
+    if m and group.get("count") == 1 and item["num"] == "1" and m.group(1) != "1":
+        # LoCG lists some books as one-shots named after the issue: "Marvel Graphic Novel #4 The New
+        # Mutants" #1. On Batcave's "Marvel Graphic Novel" series that's #4, not #1 (Captain Marvel).
+        nums = [norm_num(m.group(1))]     # never fall back to #1 here: that's a different book
     year = annual_year(gtitle(group)) if group.get("annual") else None
     if year:
         # "2018 Annual #1" is "_Annual 2018" on Batcave; never fall back to plain "Annual #1",
