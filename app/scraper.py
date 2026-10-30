@@ -883,6 +883,10 @@ def run():
     """Run a full scrape using the settings at the top of this file (or the ones the app set)."""
     global STOP_REQUESTED
     STOP_REQUESTED = False
+    if "mangadex.org" in START_URL.lower():
+        import mangadex                    # manga: uses MangaDex's own API, no browser needed
+        mangadex.run()
+        return
     print(f"Saving to: {os.path.join(FINAL_ROOT, SUB_PATH or '', FOLDER_NAME)}")
 
     try:

@@ -1,6 +1,6 @@
 # Comic Scraper
 
-Downloads comics from batcave.biz into `.cbz` files that open in Calibre, ComicsPlusPlus and other comic readers.
+Downloads comics from batcave.biz and manga from mangadex.org into `.cbz` files that open in Calibre, ComicsPlusPlus and other comic readers.
 
 ## Install
 
@@ -17,6 +17,13 @@ You don't need Python. You only need Google Chrome or Microsoft Edge, and Edge c
 3. If a "verify you are human" check appears, click it once. The browser hides again by itself.
 
 Comics are saved to `Documents\Comics` by default (change it with **Browse…**).
+
+## Manga
+
+Paste a MangaDex title page (`https://mangadex.org/title/<id>/<name>`) or any chapter link into the
+same box. The numbers are then chapter numbers (10 to 20 also gets 10.5), and **Get every issue**
+gets the whole manga. A chapter link uses that chapter's language and translation group where it can.
+MangaDex has an official API, so no browser opens for manga.
 
 ## Reading lists
 
@@ -39,6 +46,7 @@ app/            the program
   gui.py          the app window
   scraper.py      the engine that opens the reader and downloads pages
   readinglist.py  reading lists: League of Comic Geeks lists, Batcave matching, ordered downloads
+  mangadex.py     manga from MangaDex (uses its API, no browser)
 assets/         icon
 installer/      Inno Setup script that makes ComicScraper-Setup.exe
 scripts/        build.bat (build the installer), run.bat (run from source)
