@@ -11,6 +11,7 @@ import datetime
 import difflib
 import hashlib
 import json
+import threading
 import os
 import re
 import time
@@ -109,10 +110,29 @@ def plan_path(plan):
     return os.path.join(PLANS_DIR, safe_filename(plan["name"]) + ".json")
 
 
+_SAVE_LOCK = threading.Lock()
+
+
 def save_plan(plan):
+    """Save the list. Written to a temp file first, so a crash never leaves half a file. Windows
+    sometimes refuses a write for a moment (Errno 22 / 13) while antivirus, OneDrive or another
+    window is reading the file: try again a few times, and never stop the job over it."""
     os.makedirs(PLANS_DIR, exist_ok=True)
-    with open(plan_path(plan), "w", encoding="utf-8") as f:
-        json.dump(plan, f, indent=1)
+    path = plan_path(plan)
+    with _SAVE_LOCK:
+        text = json.dumps(plan, indent=1)
+        for attempt in range(6):
+            tmp = f"{path}.{os.getpid()}.tmp"
+            try:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    f.write(text)
+                os.replace(tmp, path)
+                return True
+            except OSError as e:
+                last = e
+                time.sleep(0.2 * (attempt + 1))
+        problem(f"   (couldn't save the list right now: {last}; it'll be saved on the next change)")
+        return False
 
 
 def load_saved_plan(name):
@@ -641,7 +661,13 @@ def search_queries(group):
     if group.get("annual"):
         qs.append(base_name(name))                       # "L.E.G.I.O.N. Annual" -> "L.E.G.I.O.N."
         qs.append(re.sub(r"^the\s+", "", base_name(clean), flags=re.I))
+    if re.search(r"micro-?\s?series", clean, re.I):     # Batcave writes it all three ways
+        for spelling in ("Micro-Series", "Microseries", "Micro Series"):
+            qs.append(re.sub(r"micro-?\s?series", spelling, clean, flags=re.I))
     if ":" in name:
+        sub = name.split(":", 1)[1].strip()
+        if len(sub.split()) >= 2:                        # "TMNT: Villains Micro-Series" -> "Villains Micro-Series"
+            qs.append(sub)
         qs.append(name.split(":")[0].strip())          # "Newstime: The Life..." -> "Newstime"
     if "," in name:                                     # "Peter Parker, The Spectacular Spider-Man"
         after = name.split(",", 1)[1].strip()
@@ -739,6 +765,24 @@ def coverage(page, plan, group, url, first_load=False):
     return len(have), len(items), missing
 
 
+SUBTITLE_SKIP = {"the", "a", "an", "of", "and", "in", "on", "vs", "series", "mini", "limited", "micro",
+                 "microseries", "special", "one", "shot", "vol", "volume"}
+
+
+def lacks_subtitle(g, title):
+    """'Teenage Mutant Ninja Turtles: Villains Micro-Series' vs Batcave's main 'Teenage Mutant Ninja
+    Turtles (2011-)': none of the words after the colon are in the Batcave name."""
+    name = gtitle(g)
+    if ":" not in name:
+        return False
+    words = {w for w in norm_title(name.split(":", 1)[1]).split() if w not in SUBTITLE_SKIP and not w.isdigit()}
+    return bool(words) and not (words & set(norm_title(title or "").split()))
+
+
+def taken_by_other_row(plan, g, url):
+    return any(o is not g and (o.get("match") or {}).get("url") == url for o in plan["groups"].values())
+
+
 def verify_match(page, plan, g, first_load=False):
     """Check the chosen series really has the issues. If it has none of them, try the next
     few search results and keep whichever has the most."""
@@ -756,6 +800,21 @@ def verify_match(page, plan, g, first_load=False):
         for c in g.get("candidates") or []:
             if c.get("score", 0) >= 0.5 and c.get("fits", True) and all(c["url"] != o["url"] for o in options):
                 options.append({k: c.get(k) for k in ("title", "name", "year", "url")})
+        # never use the main series for a spin-off: "TMNT: Villains Micro-Series" #1-8 are not
+        # TMNT (2011-) #1-8. A Batcave series without the subtitle that another row already uses is out.
+        wrong = [o for o in options if lacks_subtitle(g, o["title"]) and taken_by_other_row(plan, g, o["url"])]
+        if wrong:
+            options = [o for o in options if o not in wrong]
+            if not options:
+                g["match"] = None
+                g["status"] = "not found"
+                g["found"] = [0, len(series_items(plan, g, released_only=True))]
+                problem(f"   {g['name']}: Batcave only has the main series ({wrong[0]['title']}), "
+                        "not this one. Double-click the row to search or paste its page.")
+                return
+            if g.get("match") in wrong:
+                g["match"] = options[0]
+                g["status"] = "check"
     for opt in options[:4]:
         have, need, missing = coverage(page, plan, g, opt["url"], first_load)
         first_load = False
@@ -825,7 +884,7 @@ def verify_match(page, plan, g, first_load=False):
         g["status"] = "matched"         # right name (or name + subtitle, same year) and every issue is there
 
 
-CHECK_VERSION = 7     # bump when issue matching changes, so saved counts get redone
+CHECK_VERSION = 9     # bump when issue matching changes, so saved counts get redone
 
 
 def find_on_batcave(page, plan, on_update=None, redo=False):
@@ -1008,9 +1067,27 @@ def issue_map(issues):
     return {"entries": entries, "prefix": set(prefix)}
 
 
+def _expand_initials(words, other):
+    """'tmnt' -> 'teenage mutant ninja turtles' when the other name has those words in a row."""
+    out = []
+    for w in words:
+        hit = None
+        if len(w) >= 3 and w.isalpha() and w not in other:
+            for i in range(len(other)):
+                for j in range(i + 2, min(len(other), i + 8) + 1):
+                    if "".join(x[0] for x in other[i:j]) == w:
+                        hit = other[i:j]
+                        break
+                if hit:
+                    break
+        out += hit or [w]
+    return out
+
+
 def _name_overlap(item_title, entry_title, ignore):
-    a = set(norm_title(item_title).split()) - ignore
-    b = set(norm_title(entry_title).split()) - ignore
+    a_words, b_words = norm_title(item_title).split(), norm_title(entry_title).split()
+    a = set(_expand_initials(a_words, b_words)) - ignore      # Batcave: "FCBD 2019 TMNT"
+    b = set(_expand_initials(b_words, a_words)) - ignore
     if not a or not b:
         return 0.0
     return len(a & b) / min(len(a), len(b))
