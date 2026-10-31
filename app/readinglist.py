@@ -1108,7 +1108,7 @@ def download(page, context, user_agent, plan, root):
                 break
             g = groups[it["series"]]
             fname = f"{str(it['pos']).zfill(width)} - {safe_filename(it['title'])}{S.ARCHIVE_EXT}"
-            path = os.path.join(folder, fname)
+            path = S.batch_path(folder, fname, it["pos"], len(plan["items"]), width)
             if os.path.exists(path):
                 skipped += 1
                 continue

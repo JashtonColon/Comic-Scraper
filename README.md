@@ -17,6 +17,9 @@ You don't need Python. You only need Google Chrome or Microsoft Edge, and Edge c
 3. If a "verify you are human" check appears, click it once. The browser hides again by itself.
 
 Comics are saved to `Documents\Comics` by default (change it with **Browse…**).
+Big downloads are split into subfolders of 100 (`001-100`, `101-200`, ...; reading lists use `0001-0100`)
+so folders open quickly. Change the number, or set 0 for one folder, in **Settings → Files per folder**.
+Annuals and TPBs/specials from **Get every issue** go in `Annuals` and `Other`.
 
 ## Manga
 

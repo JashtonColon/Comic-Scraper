@@ -289,12 +289,15 @@ def run():
     print(f"{len(todo)} chapters to get")
 
     os.makedirs(folder, exist_ok=True)
+    top = int(max([chapter_number(c) or 0 for c in chapters] + [len(todo)]))
     for ch in todo:
         if S.STOP_REQUESTED:
             print("Stopped by user")
             break
         name = file_stem(S.FILENAME_PREFIX, ch) + S.ARCHIVE_EXT
-        save_path = os.path.join(folder, name)
+        n = chapter_number(ch)
+        save_path = S.batch_path(folder, name, int(n) if n is not None else 1, top,
+                                 extra="" if n is not None else "Oneshots")
         label = f"Chapter {ch['chapter']}" if ch["chapter"] else (ch["title"] or "Oneshot")
         if os.path.exists(save_path):
             print(f"{label}: already there ({name})")

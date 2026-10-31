@@ -37,6 +37,7 @@ DEFAULTS = {
     "rl_text": "",           # reading list: pasted text
     "rl_last": "",           # reading list: name of the last list loaded (reopened on start)
     "tab": "0",
+    "files_per_folder": "100",   # split big downloads into subfolders of this many files; 0 = never
 }
 
 INSTALLER_APP_ID = "{6B1E3F2A-8C4D-4E7B-9A51-2F0C7D9E4B13}"   # same AppId as installer/installer.iss
@@ -438,6 +439,10 @@ class App(tk.Tk):
         scraper.CHROME_PROFILE = s["chrome_profile"]
         scraper.VERBOSE = s["verbose"]
         scraper.HIDE_CHROME = s["hide_chrome"]
+        try:
+            scraper.FILES_PER_FOLDER = max(0, int(s.get("files_per_folder") or 0))
+        except ValueError:
+            scraper.FILES_PER_FOLDER = 100
 
     def _set_busy(self, busy):
         state = "disabled" if busy else "normal"
@@ -713,10 +718,18 @@ class App(tk.Tk):
         win.bind("<Destroy>", lambda e: e.widget is win and self.vars["chrome_path"].trace_remove("write", trace))
         refresh()
 
+        ttk.Label(f, text="Files per folder").grid(row=4, column=0, sticky="w", padx=6, pady=6)
+        per = ttk.Frame(f)
+        per.grid(row=4, column=1, sticky="w", padx=6)
+        ttk.Spinbox(per, from_=0, to=5000, increment=50, width=7,
+                    textvariable=self.vars["files_per_folder"]).pack(side="left")
+        ttk.Label(per, text='Big downloads go in subfolders like "001-100", "101-200" so folders open fast. '
+                            '0 = one folder', foreground="gray").pack(side="left", padx=(8, 0))
+
         def done():
             save_settings(self._collect())
             win.destroy()
-        ttk.Button(f, text="Save", command=done).grid(row=4, column=2, sticky="e", padx=6, pady=(10, 0))
+        ttk.Button(f, text="Save", command=done).grid(row=5, column=2, sticky="e", padx=6, pady=(10, 0))
 
     def _on_close(self):
         save_settings(self._collect())

@@ -16,6 +16,7 @@ SUB_PATH = "Batman"              # set to "" to skip this level
 FOLDER_NAME = "Long Halloween"
 FILENAME_PREFIX = "LongHalloween"
 ARCHIVE_EXT = ".cbz"             # ZIP comic archive; works in Calibre and ComicsPlusPlus
+FILES_PER_FOLDER = 100           # split big downloads into subfolders of this many ("001-100", "101-200"); 0 = never
 ALL_ISSUES = False               # True = ignore START/END_ISSUE and download everything in the series
 
 
@@ -133,6 +134,39 @@ def series_page_url(url):
 # ---- output: step-by-step detail is held back unless VERBOSE or something goes wrong ----
 _held = []
 _show_all = False
+
+
+def batch_folder(folder, number, total, width=3, extra=""):
+    """Big downloads are slow to open in one folder, so file number `number` goes in a subfolder of
+    FILES_PER_FOLDER: issue 7 -> "001-100", issue 250 -> "201-300". `total` is the highest number in
+    the download: nothing is split until it's bigger than FILES_PER_FOLDER. `extra` is a named folder
+    instead ("Annuals"), used only when splitting."""
+    n = FILES_PER_FOLDER
+    if not n or n < 1 or total <= n:
+        return folder
+    if extra:
+        return os.path.join(folder, extra)
+    lo = (max(1, number) - 1) // n * n + 1
+    return os.path.join(folder, f"{str(lo).zfill(width)}-{str(lo + n - 1).zfill(width)}")
+
+
+def batch_path(folder, filename, number, total, width=3, extra=""):
+    """The full path for a file (see batch_folder). A file already downloaded into the main folder
+    by an earlier run is moved into its subfolder, so it isn't downloaded again."""
+    path = os.path.join(batch_folder(folder, number, total, width, extra), filename)
+    flat = os.path.join(folder, filename)
+    if path == flat and FILES_PER_FOLDER and FILES_PER_FOLDER > 0:
+        # a smaller download than last time: use the subfolder an earlier, bigger run put it in
+        split = os.path.join(batch_folder(folder, number, FILES_PER_FOLDER + 1, width, extra), filename)
+        if not os.path.exists(flat) and os.path.exists(split):
+            return split
+    if path != flat and not os.path.exists(path) and os.path.exists(flat):
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            os.replace(flat, path)
+        except OSError:
+            return flat
+    return path
 
 
 def detail(msg):
@@ -523,6 +557,7 @@ def collect_parts(page, reader_urls, first_load=False):
 
 def combine_cbz(part_paths, save_path):
     """Join already-downloaded part files into one .cbz (pages renumbered in order)."""
+    os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
     tmp_path = save_path + ".part"
     n = 0
     with zipfile.ZipFile(tmp_path, "w") as out:
@@ -610,7 +645,7 @@ def process_issue(issue_num, series_id, start_issue_id, page, context, user_agen
                   reader_url=None):
     issue_padded = str(issue_num).zfill(3)
     final_dir = os.path.join(FINAL_ROOT, SUB_PATH, FOLDER_NAME) if SUB_PATH else os.path.join(FINAL_ROOT, FOLDER_NAME)
-    final_save_path = os.path.join(final_dir, f"{FILENAME_PREFIX}_{issue_padded}{ARCHIVE_EXT}")
+    final_save_path = batch_path(final_dir, f"{FILENAME_PREFIX}_{issue_padded}{ARCHIVE_EXT}", issue_num, END_ISSUE)
 
     if os.path.exists(final_save_path):
         return True, f"Skipping {issue_num} (already downloaded)"
@@ -842,6 +877,11 @@ def merge_downloaded_parts(folder, stem, count, save_path):
     return True
 
 
+def _issue_int(label):
+    m = re.search(r"-?\d+", label or "")
+    return max(1, int(m.group())) if m else 1
+
+
 def run_all(page, series_id, pipeline):
     """Download every issue, annual and named entry (TPBs, specials) in the series."""
     final_dir = os.path.join(FINAL_ROOT, SUB_PATH, FOLDER_NAME) if SUB_PATH else os.path.join(FINAL_ROOT, FOLDER_NAME)
@@ -856,11 +896,14 @@ def run_all(page, series_id, pipeline):
                  "others (TPBs, specials)": sum(1 for f in files if not f[0].startswith(("#", "Annual")))}
         print(f"Batcave lists {len(files)} entries: " + ", ".join(f"{v} {k}" for k, v in kinds.items() if v))
         skipped, first, merged = 0, False, 0
+        top = max([_issue_int(f[0]) for f in files if f[0].startswith("#")] + [len(files)])
         for n, (label, stem, href) in enumerate(files, 1):
             if STOP_REQUESTED:
                 print("Stopped by user")
                 break
-            path = os.path.join(final_dir, stem + ARCHIVE_EXT)
+            # issues by their number; annuals and TPBs/specials get a folder each
+            extra = "" if label.startswith("#") else ("Annuals" if label.startswith("Annual") else "Other")
+            path = batch_path(final_dir, stem + ARCHIVE_EXT, _issue_int(label), top, extra=extra)
             if os.path.exists(path):
                 skipped += 1
                 continue
