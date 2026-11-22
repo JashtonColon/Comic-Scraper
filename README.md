@@ -1,6 +1,6 @@
 # Comic Scraper
 
-Downloads comics from batcave.biz and manga from mangadex.org into `.cbz` files that open in Calibre, ComicsPlusPlus and other comic readers.
+Downloads comics from batcave.biz and manga from mangadex.org and weebcentral.com into `.cbz` files that open in Calibre, ComicsPlusPlus and other comic readers.
 
 ## Install
 
@@ -28,6 +28,10 @@ same box. The numbers are then chapter numbers (10 to 20 also gets 10.5), and **
 gets the whole manga. A chapter link uses that chapter's language and translation group where it can.
 MangaDex has an official API, so no browser opens for manga.
 
+WeebCentral works the same way: paste a series page (`https://weebcentral.com/series/<id>/<name>`)
+or any chapter link. Its pages are plain web pages, so Chrome only opens if the site asks you to
+verify you're human. Side stories and other unnumbered chapters go in an `Other` folder with **Get every issue**.
+
 ## Reading lists
 
 The **Reading list** tab downloads a whole reading order into one folder, numbered in order
@@ -50,6 +54,7 @@ app/            the program
   scraper.py      the engine that opens the reader and downloads pages
   readinglist.py  reading lists: League of Comic Geeks lists, Batcave matching, ordered downloads
   mangadex.py     manga from MangaDex (uses its API, no browser)
+  weebcentral.py  manga from WeebCentral (plain web pages; Chrome only if the site asks)
 assets/         icon
 installer/      Inno Setup script that makes ComicScraper-Setup.exe
 scripts/        build.bat (build the installer), run.bat (run from source)

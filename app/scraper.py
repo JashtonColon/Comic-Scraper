@@ -930,6 +930,10 @@ def run():
         import mangadex                    # manga: uses MangaDex's own API, no browser needed
         mangadex.run()
         return
+    if "weebcentral.com" in START_URL.lower():
+        import weebcentral                 # manga: plain web pages, Chrome only if the site asks
+        weebcentral.run()
+        return
     print(f"Saving to: {os.path.join(FINAL_ROOT, SUB_PATH or '', FOLDER_NAME)}")
 
     try:

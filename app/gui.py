@@ -12,6 +12,7 @@ from tkinter import ttk, filedialog, messagebox
 import scraper
 import readinglist
 import mangadex
+import weebcentral
 
 APP_NAME = "Comic Scraper"
 FROZEN = getattr(sys, "frozen", False)          # True when running as the installed .exe
@@ -317,6 +318,16 @@ class App(tk.Tk):
             self.link_check.config(text="Paste a series page, or the reader link of the first issue you want",
                                    foreground="gray")
             return
+        if weebcentral.is_weebcentral(url):
+            try:
+                kind, _ = weebcentral.parse_link(url)
+                what = "chapter link (gets its whole series)" if kind == "chapter" else "series page"
+                self.link_check.config(text=f"Looks good: WeebCentral {what}. The numbers below are chapter "
+                                            "numbers; 10 to 20 also gets 10.5", foreground="#2e7d32")
+            except ValueError:
+                self.link_check.config(text="Not a WeebCentral series or chapter link. Use one like "
+                                            "https://weebcentral.com/series/<id>/<name>", foreground="#c62828")
+            return
         if mangadex.is_mangadex(url):
             try:
                 kind, _ = mangadex.parse_link(url)
@@ -492,13 +503,16 @@ class App(tk.Tk):
         try:
             if mangadex.is_mangadex(s["start_url"]):
                 mangadex.parse_link(s["start_url"])
+            elif weebcentral.is_weebcentral(s["start_url"]):
+                weebcentral.parse_link(s["start_url"])
             else:
                 scraper.parse_batcave_link(s["start_url"])
         except ValueError:
             messagebox.showerror(APP_NAME, "Paste the series page or the first issue's reader link.\n"
                                  "Examples:\nhttps://batcave.biz/7303-action-comics-1938.html\n"
                                  "https://batcave.biz/reader/9264/60124\n"
-                                 "https://mangadex.org/title/<id>/<name>")
+                                 "https://mangadex.org/title/<id>/<name>\n"
+                                 "https://weebcentral.com/series/<id>/<name>")
             return
         if not s["folder_name"]:
             messagebox.showerror(APP_NAME, "Give the comic a name (used for its folder).")
