@@ -13,6 +13,7 @@ import scraper
 import readinglist
 import mangadex
 import weebcentral
+import search
 
 APP_NAME = "Comic Scraper"
 FROZEN = getattr(sys, "frozen", False)          # True when running as the installed .exe
@@ -39,6 +40,8 @@ DEFAULTS = {
     "rl_last": "",           # reading list: name of the last list loaded (reopened on start)
     "tab": "0",
     "files_per_folder": "100",   # split big downloads into subfolders of this many files; 0 = never
+    "search_query": "",
+    "search_sites": "Batcave,MangaDex,WeebCentral",
 }
 
 INSTALLER_APP_ID = "{6B1E3F2A-8C4D-4E7B-9A51-2F0C7D9E4B13}"   # same AppId as installer/installer.iss
@@ -161,14 +164,17 @@ class App(tk.Tk):
         root.rowconfigure(0, weight=3)
         single = ttk.Frame(self.tabs, padding=10)
         rlist = ttk.Frame(self.tabs, padding=10)
+        find = ttk.Frame(self.tabs, padding=10)
         self.tabs.add(single, text="Single series")
         self.tabs.add(rlist, text="Reading list")
+        self.tabs.add(find, text="Search")
         try:
             self.tabs.select(int(self.vars["tab"].get()))
         except (ValueError, tk.TclError):
             pass
         self._build_single(single)
         self._build_reading_list(rlist)
+        self._build_search(find)
 
         # shared buttons
         btns = ttk.Frame(root)
@@ -302,6 +308,84 @@ class App(tk.Tk):
         self.rl_summary = ttk.Label(f, foreground="gray",
                                     text="Click Get to include or skip a series. Double-click a row to change its Batcave match.")
         self.rl_summary.grid(row=7, column=0, columnspan=4, sticky="w", padx=8)
+
+    def _build_search(self, f):
+        pad = {"padx": 8, "pady": 4}
+        f.columnconfigure(1, weight=1)
+        f.rowconfigure(3, weight=1)
+        ttk.Label(f, text="Find a comic or manga").grid(row=0, column=0, sticky="w", **pad)
+        box = ttk.Entry(f, textvariable=self.vars["search_query"])
+        box.grid(row=0, column=1, sticky="ew", **pad)
+        box.bind("<Return>", lambda e: self._search())
+        self.search_btn = ttk.Button(f, text="Search", command=self._search)
+        self.search_btn.grid(row=0, column=2, **pad)
+
+        sites = ttk.Frame(f)
+        sites.grid(row=1, column=1, columnspan=2, sticky="w", **pad)
+        chosen = self.vars["search_sites"].get().split(",")
+        self.search_sites = {}
+        for name in search.SOURCES:
+            var = tk.BooleanVar(value=name in chosen)
+            self.search_sites[name] = var
+            ttk.Checkbutton(sites, text=name, variable=var, command=self._save_search_sites).pack(side="left", padx=(0, 14))
+        ttk.Label(f, text="Search in").grid(row=1, column=0, sticky="w", **pad)
+
+        ttk.Label(f, text="Double-click a result to download it: it fills in the Single series tab.",
+                  foreground="gray").grid(row=2, column=0, columnspan=3, sticky="w", **pad)
+        cols = ("source", "title", "year", "info")
+        self.results_tree = ttk.Treeview(f, columns=cols, show="headings", selectmode="browse")
+        for c, text, width, stretch in (("source", "Site", 110, False), ("title", "Title", 480, True),
+                                        ("year", "Year", 70, False), ("info", "Details", 220, False)):
+            self.results_tree.heading(c, text=text)
+            self.results_tree.column(c, width=width, stretch=stretch, anchor="w")
+        self.results_tree.grid(row=3, column=0, columnspan=3, sticky="nsew", **pad)
+        sb = ttk.Scrollbar(f, command=self.results_tree.yview)
+        sb.grid(row=3, column=3, sticky="ns")
+        self.results_tree.configure(yscrollcommand=sb.set)
+        self.results_tree.bind("<Double-1>", lambda e: self._use_result())
+        self.results_tree.bind("<Return>", lambda e: self._use_result())
+        self.search_results = []
+
+    def _save_search_sites(self):
+        self.vars["search_sites"].set(",".join(n for n, v in self.search_sites.items() if v.get()))
+
+    def _search(self):
+        q = self.vars["search_query"].get().strip()
+        sites = [n for n, v in self.search_sites.items() if v.get()]
+        if not q:
+            return
+        if not sites:
+            messagebox.showinfo(APP_NAME, "Tick at least one site to search.")
+            return
+
+        def job():
+            print(f"Searching for '{q}'...")
+            if "Batcave" in sites:                       # Batcave's search needs the browser
+                with scraper.browser_session() as (page, context, ua):
+                    results, problems = search.search_all(q, sites, page)
+            else:
+                results, problems = search.search_all(q, sites)
+            search.print_summary(q, results, problems)
+            self.on_ui(lambda: self._show_results(results))
+        self._run(job)
+
+    def _show_results(self, results):
+        self.search_results = results
+        self.results_tree.delete(*self.results_tree.get_children())
+        for i, r in enumerate(results):
+            self.results_tree.insert("", "end", iid=str(i), values=(r["source"], r["title"], r["year"], r["info"]))
+
+    def _use_result(self):
+        sel = self.results_tree.focus()
+        if not sel or int(sel) >= len(self.search_results):
+            return
+        r = self.search_results[int(sel)]
+        self.vars["start_url"].set(r["url"])
+        self.vars["folder_name"].set(readinglist.safe_filename(r["title"]))
+        self.vars["filename_prefix"].set("")           # made from the new name
+        self.tabs.select(0)
+        self._log(f"\nPicked {r['title']} ({r['source']}). Set the issue numbers (or tick 'Get every issue'), "
+                  "then press Start.\n")
 
     def _toggle_rl_text(self):
         if self.rl_text_shown.get():
@@ -459,6 +543,8 @@ class App(tk.Tk):
         state = "disabled" if busy else "normal"
         self.start_btn.config(state=state)
         self.rl_load_btn.config(state=state)
+        if hasattr(self, "search_btn"):
+            self.search_btn.config(state=state)
         has_plan = self.plan is not None
         self.rl_find_btn.config(state="normal" if (has_plan and not busy) else "disabled")
         self.rl_dl_btn.config(state="normal" if (has_plan and not busy) else "disabled")

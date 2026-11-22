@@ -32,6 +32,12 @@ Big downloads are split into subfolders of 100 (`001-100`, `101-200`, ...; readi
 so folders open quickly. Change the number, or set 0 for one folder, in **Settings → Files per folder**.
 Annuals and TPBs/specials from **Get every issue** go in `Annuals` and `Other`.
 
+## Search
+
+Don't have a link? Open the **Search** tab, type a name and pick the sites to look in (Batcave,
+MangaDex, WeebCentral). Double-click a result (tap it on Android) and it fills in the link and folder
+name on the Single series tab. Then set the issue numbers, or tick **Get every issue**, and press Start.
+
 ## Manga
 
 Paste a MangaDex title page (`https://mangadex.org/title/<id>/<name>`) or any chapter link into the
@@ -66,6 +72,7 @@ app/            the program
   readinglist.py  reading lists: League of Comic Geeks lists, Batcave matching, ordered downloads
   mangadex.py     manga from MangaDex (uses its API, no browser)
   weebcentral.py  manga from WeebCentral (plain web pages; Chrome only if the site asks)
+  search.py       the Search tab: looks up a name on every site
   android_bridge.py  runs the same engine in the Android app (its built-in browser instead of Chrome)
 android/          the Android app (Kotlin screens; built by GitHub Actions)
 assets/         icon

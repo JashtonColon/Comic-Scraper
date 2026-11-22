@@ -585,3 +585,47 @@ def rl_skip(key):
     if g:
         g["include"] = False
         _changed()
+
+
+# ---------------------------------------------------------------- search
+RESULTS = []
+
+
+def search_start(settings_json, query, sites_json):
+    """Search the chosen sites in the background. The screen gets a "results" event when done."""
+    import search
+    query = (query or "").strip()
+    sites = json.loads(sites_json or "[]")
+    if not query:
+        return "Type a name to search for."
+    if not sites:
+        return "Tick at least one site to search."
+    _apply(json.loads(settings_json))
+
+    def job():
+        global RESULTS
+        print(f"Searching for '{query}'...")
+        if "Batcave" in sites:                          # Batcave's search needs the browser
+            with S.browser_session() as (page, context, ua):
+                results, problems = search.search_all(query, sites, page)
+        else:
+            results, problems = search.search_all(query, sites)
+        search.print_summary(query, results, problems)
+        RESULTS = results
+        _event("results")
+    threading.Thread(target=_guard, args=(job,), daemon=True).start()
+    return ""
+
+
+def search_results():
+    return json.dumps(RESULTS)
+
+
+def search_pick(index):
+    """The link and folder name to put in the Single series tab for result number `index`."""
+    if index < 0 or index >= len(RESULTS):
+        return "{}"
+    r = RESULTS[index]
+    print(f"\nPicked {r['title']} ({r['source']}). Set the issue numbers (or tick 'Get every issue'), "
+          "then tap Start.")
+    return json.dumps({"url": r["url"], "name": RL.safe_filename(r["title"])})

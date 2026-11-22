@@ -110,6 +110,13 @@ class MainActivity : Activity() {
     private var rows = JSONArray()
     private val rowAdapter = RowAdapter()
 
+    // search
+    private lateinit var searchEdit: EditText
+    private lateinit var searchBtn: Button
+    private val siteBoxes = LinkedHashMap<String, CheckBox>()
+    private var results = JSONArray()
+    private val resultAdapter = ResultAdapter()
+
     // settings
     private lateinit var rootEdit: EditText
     private lateinit var perFolderEdit: EditText
@@ -238,7 +245,7 @@ class MainActivity : Activity() {
         val header = column()
         header.addView(label("Comic Scraper  v$version", 18f, true, Color.BLACK))
         val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        listOf("Single series", "Reading list", "Settings").forEachIndexed { i, name ->
+        listOf("Series", "Reading list", "Search", "Settings").forEachIndexed { i, name ->
             val b = button(name) { showTab(i) }
             tabButtons.add(b)
             tabs.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -250,6 +257,7 @@ class MainActivity : Activity() {
         val pages = FrameLayout(this)
         tabViews.add(buildSingle())
         tabViews.add(buildReadingList())
+        tabViews.add(buildSearch())
         tabViews.add(buildSettings())
         for (v in tabViews) pages.addView(v, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         panel.addView(pages, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 3f))
@@ -388,6 +396,97 @@ class MainActivity : Activity() {
         return page
     }
 
+    private fun buildSearch(): View {
+        val c = column()
+        c.addView(label("Find a comic or manga"))
+        searchEdit = edit("Batman, One Piece, ...", pref("search_query"))
+        searchEdit.imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+        searchEdit.setOnEditorActionListener { _, _, _ ->
+            startSearch()
+            true
+        }
+        searchBtn = button("Search") { startSearch() }
+        val searchRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        searchRow.addView(searchEdit, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        searchRow.addView(searchBtn)
+        c.addView(searchRow)
+
+        val chosen = pref("search_sites", "Batcave,MangaDex,WeebCentral").split(",")
+        val sites = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for (name in listOf("Batcave", "MangaDex", "WeebCentral")) {
+            val box = CheckBox(this).apply {
+                text = name
+                isChecked = name in chosen
+                setOnCheckedChangeListener { _, _ -> saveSearchSites() }
+            }
+            siteBoxes[name] = box
+            sites.addView(box)
+        }
+        c.addView(sites)
+        c.addView(label("Tap a result to download it: it fills in the Series tab.", 12f))
+
+        val list = ListView(this).apply {
+            adapter = resultAdapter
+            onItemClickListener = AdapterView.OnItemClickListener { _, _, pos, _ -> pickResult(pos) }
+        }
+        val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        page.addView(c)
+        page.addView(list, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        return page
+    }
+
+    private fun saveSearchSites() {
+        prefs.edit().putString("search_sites", siteBoxes.filter { it.value.isChecked }.keys.joinToString(",")).apply()
+    }
+
+    private fun startSearch() {
+        if (busy) {
+            toast("Wait for the current job to finish, or tap Stop.")
+            return
+        }
+        if (engine == null) {
+            toast("Still starting up. Try again in a moment.")
+            return
+        }
+        val query = searchEdit.text.toString().trim()
+        prefs.edit().putString("search_query", query).apply()
+        val sites = JSONArray()
+        for ((name, box) in siteBoxes) if (box.isChecked) sites.put(name)
+        logView.text = ""
+        setBusy(true)
+        call("search_start", settingsJson(), query, sites.toString()) { msg ->
+            if (msg.isNotEmpty() && msg != "None") {
+                setBusy(false)
+                alert(msg)
+            }
+        }
+    }
+
+    private fun showResults() {
+        call("search_results") { json ->
+            results = try { JSONArray(json) } catch (e: Exception) { JSONArray() }
+            resultAdapter.notifyDataSetChanged()
+            if (results.length() == 0) toast("Nothing found. Try a shorter name.")
+        }
+    }
+
+    private fun pickResult(pos: Int) {
+        call("search_pick", pos) { json ->
+            try {
+                val o = JSONObject(json)
+                if (o.has("url")) {
+                    linkEdit.setText(o.getString("url"))
+                    nameEdit.setText(o.optString("name"))
+                    prefixEdit.setText("")
+                    showTab(0)
+                    toast("Set the issue numbers (or tick 'Get every issue'), then tap Start.")
+                }
+            } catch (e: Exception) {
+                // ignore: the list changed
+            }
+        }
+    }
+
     private fun buildSettings(): View {
         val c = column()
         c.addView(label("Save comics in"))
@@ -427,14 +526,14 @@ class MainActivity : Activity() {
     }
 
     private fun showTab(i: Int) {
-        val index = if (i in 0..2) i else 0
+        val index = if (i in 0..3) i else 0
         tabViews.forEachIndexed { n, v -> v.visibility = if (n == index) View.VISIBLE else View.GONE }
         tabButtons.forEachIndexed { n, b ->
             b.setTypeface(null, if (n == index) Typeface.BOLD else Typeface.NORMAL)
             b.alpha = if (n == index) 1f else 0.6f
         }
         prefs.edit().putInt("tab", index).apply()
-        if (index == 2) updateAccessText()
+        if (index == 3) updateAccessText()
     }
 
     fun showBrowser(show: Boolean) {
@@ -472,6 +571,7 @@ class MainActivity : Activity() {
             when (name) {
                 "table" -> refreshTable()
                 "candidates" -> matchDialog?.reload()
+                "results" -> showResults()
                 "done" -> {
                     setBusy(false)
                     refreshTable()
@@ -581,6 +681,7 @@ class MainActivity : Activity() {
         startBtn.isEnabled = !b
         loadBtn.isEnabled = !b
         savedBtn.isEnabled = !b
+        searchBtn.isEnabled = !b
         findBtn.isEnabled = !b && hasPlan
         dlBtn.isEnabled = !b && hasPlan
         stopBtn.isEnabled = b
@@ -757,6 +858,33 @@ class MainActivity : Activity() {
             bottom.text = match + "   -   " + r.optString("status")
             top.setTextColor(color)
             bottom.setTextColor(color)
+            return box
+        }
+    }
+
+    inner class ResultAdapter : BaseAdapter() {
+        override fun getCount(): Int = results.length()
+        override fun getItem(position: Int): Any = results.opt(position) ?: ""
+        override fun getItemId(position: Int): Long = position.toLong()
+
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+            val box = (convertView as? LinearLayout) ?: LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                addView(TextView(this@MainActivity).apply {
+                    textSize = 15f
+                    setTextColor(Color.rgb(33, 33, 33))
+                })
+                addView(TextView(this@MainActivity).apply {
+                    textSize = 12f
+                    setTextColor(Color.GRAY)
+                })
+            }
+            val r = results.optJSONObject(position) ?: return box
+            val year = r.optString("year")
+            (box.getChildAt(0) as TextView).text = r.optString("title") +
+                (if (year.isNotEmpty() && !r.optString("title").contains(year)) "  ($year)" else "")
+            (box.getChildAt(1) as TextView).text = r.optString("source") + "   -   " + r.optString("info")
             return box
         }
     }
