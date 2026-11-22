@@ -2,6 +2,17 @@
 
 Downloads comics from batcave.biz and manga from mangadex.org and weebcentral.com into `.cbz` files that open in Calibre, ComicsPlusPlus and other comic readers.
 
+## Android
+
+Download **ComicScraper-Android.apk** from the [Releases](../../releases) page on your phone and open it.
+Android will ask you to allow installing apps from your browser: allow it once.
+
+The Android app does everything the Windows one does (single series, reading lists, MangaDex,
+WeebCentral) with its own built-in browser instead of Chrome. The first time you start a download it
+asks to "manage all files", so it can save comics in a normal `Comics` folder that reader apps like
+ComicScreen, Mihon or Perfect Viewer can open. If Batcave shows a "verify you are human" check, the
+browser appears: tap the check and the app goes back by itself.
+
 ## Install
 
 Download **ComicScraper-Setup.exe** from the [Releases](../../releases) page and run it.
@@ -55,6 +66,8 @@ app/            the program
   readinglist.py  reading lists: League of Comic Geeks lists, Batcave matching, ordered downloads
   mangadex.py     manga from MangaDex (uses its API, no browser)
   weebcentral.py  manga from WeebCentral (plain web pages; Chrome only if the site asks)
+  android_bridge.py  runs the same engine in the Android app (its built-in browser instead of Chrome)
+android/          the Android app (Kotlin screens; built by GitHub Actions)
 assets/         icon
 installer/      Inno Setup script that makes ComicScraper-Setup.exe
 scripts/        build.bat (build the installer), run.bat (run from source)
@@ -65,4 +78,8 @@ scripts/        build.bat (build the installer), run.bat (run from source)
 
 - Run from source: `pip install -r requirements.txt`, then `python app/gui.py` (or double-click `scripts/run.bat`)
 - Build locally: double-click `scripts/build.bat`. It needs [Inno Setup 6](https://jrsoftware.org/isdl.php) for the installer.
-- Release: push a tag such as `v1.0.1`. GitHub Actions builds the installer and adds it to Releases.
+- Release: push a tag such as `v1.0.1`. GitHub Actions builds the Windows installer and the Android APK
+  and adds both to Releases. Run `git tag` first to see which numbers are taken.
+- Android: built only by GitHub Actions (`android/`, Gradle + Chaquopy). Its signing key lives in four
+  repository secrets (`ANDROID_KEYSTORE_B64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`,
+  `ANDROID_KEY_PASSWORD`), never in the repo.

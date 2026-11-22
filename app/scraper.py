@@ -64,7 +64,17 @@ import time
 import zipfile
 import requests
 from concurrent.futures import ThreadPoolExecutor
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+try:
+    from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+except ImportError:                     # the Android app has no Playwright: android_bridge drives a WebView
+    sync_playwright = None
+
+    class PWTimeout(Exception):
+        """Something didn't appear on the page in time."""
+
+# Set by the Android app (android_bridge.session): a context manager that yields
+# (page, context, user_agent) for its built-in browser instead of Chrome.
+ANDROID_BROWSER = None
 
 
 # ---- where the app keeps its own files (settings, browser profile, debug output) ----
@@ -285,6 +295,9 @@ def set_taskbar_button(show):
 
 def set_chrome_visible(page, visible):
     """Move the scraper's Chrome window on-screen or off-screen (it keeps running either way)."""
+    if hasattr(page, "set_visible"):     # Android: show or hide the app's built-in browser
+        page.set_visible(visible)
+        return
     if not (USE_MY_CHROME and HIDE_CHROME):
         return
     if visible:
@@ -331,7 +344,7 @@ def wait_for_reader(page, first_load, selector=READER_SELECTOR, js_condition=Non
         return
     except PWTimeout:
         pass
-    print("Chrome needs you: click the 'verify you are human' box in the window that just popped up.")
+    print("The site wants a 'verify you are human' check: click it in the browser that just popped up.")
     set_chrome_visible(page, True)
     try:
         wait(max(long_wait, 120000))
@@ -677,6 +690,10 @@ class BrowserError(Exception):
 @contextlib.contextmanager
 def browser_session():
     """Open (or reuse) the scraper's Chrome and yield (page, context, user_agent)."""
+    if ANDROID_BROWSER is not None:
+        with ANDROID_BROWSER() as session:
+            yield session
+        return
     with sync_playwright() as p:
         if USE_MY_CHROME:
             # Attach to the scraper Chrome window, starting it first if it isn't open

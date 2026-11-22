@@ -22,5 +22,12 @@ dist/
 Output/
 *.spec
 
+# Android build files and signing keys (the key goes in GitHub secrets, never in the repo)
+.gradle/
+local.properties
+*.jks
+*.keystore
+android-signing/
+
 # Copies of files sent in chat
 Claude outputs/

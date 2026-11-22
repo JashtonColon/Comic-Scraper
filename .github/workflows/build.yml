@@ -1,6 +1,7 @@
-# Builds ComicScraper-Setup.exe on GitHub's Windows machines.
-#  - Every push: the installer is attached to the run (Actions tab -> run -> "Artifacts").
-#  - Push a tag like v1.0.0: it's also published on the Releases page.
+# Builds Comic Scraper on GitHub's machines.
+#  - Every push: the Windows installer and the Android app are attached to the run
+#    (Actions tab -> run -> "Artifacts").
+#  - Push a tag like v1.0.0: both are also published on the Releases page.
 name: Build installer
 
 on:
@@ -13,7 +14,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,8 +53,71 @@ jobs:
           name: ComicScraper-Setup
           path: Output/ComicScraper-Setup.exe
 
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Chaquopy (Python inside the Android app) needs the same Python version on the build machine
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Pick version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.${GITHUB_RUN_NUMBER}"; fi
+          echo "APP_VERSION=$v" >> "$GITHUB_ENV"
+
+      # The signing key lets a new APK install over the old one. Without the secrets the APK still
+      # installs, but you'd have to uninstall the previous version first.
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          else
+            echo "::warning::No ANDROID_KEYSTORE_B64 secret: the APK is signed with a temporary key."
+          fi
+
+      - name: Build APK
+        working-directory: android
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: gradle assembleRelease -PappVersion="$APP_VERSION" -PappVersionCode="$GITHUB_RUN_NUMBER" --stacktrace
+
+      - name: Name the APK
+        run: cp android/app/build/outputs/apk/release/*.apk ComicScraper-Android.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ComicScraper-Android
+          path: ComicScraper-Android.apk
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: Output/ComicScraper-Setup.exe
+          files: |
+            ComicScraper-Setup.exe
+            ComicScraper-Android.apk
