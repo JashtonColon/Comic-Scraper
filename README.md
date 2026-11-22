@@ -32,6 +32,13 @@ Big downloads are split into subfolders of 100 (`001-100`, `101-200`, ...; readi
 so folders open quickly. Change the number, or set 0 for one folder, in **Settings → Files per folder**.
 Annuals and TPBs/specials from **Get every issue** go in `Annuals` and `Other`.
 
+## Updates
+
+Both apps check for a new version when they start (turn it off in **Settings**, or use
+**Check now** there). Pick **Update now**: on Windows it downloads the new installer, closes,
+installs and reopens by itself; on Android it downloads the new app and opens Android's
+install screen. You never need to come back to this page for a new version.
+
 ## Search
 
 Don't have a link? Open the **Search** tab, type a name and pick the sites to look in (Batcave,
@@ -73,6 +80,7 @@ app/            the program
   mangadex.py     manga from MangaDex (uses its API, no browser)
   weebcentral.py  manga from WeebCentral (plain web pages; Chrome only if the site asks)
   search.py       the Search tab: looks up a name on every site
+  updater.py      checks GitHub Releases for a newer version (both apps)
   android_bridge.py  runs the same engine in the Android app (its built-in browser instead of Chrome)
 android/          the Android app (Kotlin screens; built by GitHub Actions)
 assets/         icon

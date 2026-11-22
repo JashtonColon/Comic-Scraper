@@ -3,6 +3,7 @@ package com.jashton.comicscraper
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -44,6 +45,7 @@ import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -125,6 +127,8 @@ class MainActivity : Activity() {
 
     private lateinit var stopBtn: Button
     private var matchDialog: MatchDialog? = null
+    private var appVersion = ""
+    private var pendingInstall = -1L          // a downloaded update waiting for "install apps" permission
 
     // =================================================================== start-up
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -144,6 +148,9 @@ class MainActivity : Activity() {
                 mod.callAttr("init", webBridge, ui, log, filesDir.absolutePath)
                 engine = mod
                 appendLog("Ready.\n")
+                if (prefs.getBoolean("update_check", true)) {
+                    main.postDelayed({ checkUpdates(false) }, 3000)
+                }
                 val last = prefs.getString("rl_last", "") ?: ""
                 if (last.isNotEmpty()) mod.callAttr("rl_open", last)
             } catch (e: Exception) {
@@ -241,7 +248,8 @@ class MainActivity : Activity() {
         root.addView(panel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         // ---- title + tabs
-        val version = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { "" }
+        val version = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "" } catch (e: Exception) { "" }
+        appVersion = version
         val header = column()
         header.addView(label("Comic Scraper  v$version", 18f, true, Color.BLACK))
         val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -512,6 +520,14 @@ class MainActivity : Activity() {
             }
         }
         c.addView(verboseBox)
+
+        c.addView(label("Updates", 15f, true, Color.BLACK))
+        c.addView(CheckBox(this).apply {
+            text = "Check for a new version when the app starts"
+            isChecked = prefs.getBoolean("update_check", true)
+            setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("update_check", on).apply() }
+        })
+        c.addView(button("Check for updates now") { checkUpdates(true) })
 
         c.addView(label("Browser", 15f, true, Color.BLACK))
         c.addView(button("Show the built-in browser") { showBrowser(true) })
@@ -814,12 +830,125 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (::accessText.isInitialized) updateAccessText()
+        if (pendingInstall >= 0 && (Build.VERSION.SDK_INT < 26 || packageManager.canRequestPackageInstalls())) {
+            installUpdate(pendingInstall)
+        }
     }
 
     override fun onPause() {
         super.onPause()
         CookieManager.getInstance().flush()
         if (::linkEdit.isInitialized) saveSettings()
+    }
+
+    // =================================================================== updates
+    private fun checkUpdates(manual: Boolean) {
+        call("update_check", appVersion) { json ->
+            val o = try { JSONObject(json) } catch (e: Exception) { JSONObject() }
+            when {
+                o.has("error") -> if (manual) alert("Couldn't check for updates: " + o.optString("error"))
+                !o.has("version") -> if (manual) alert("You have the latest version ($appVersion).")
+                !manual && o.optString("version") == pref("update_skip") -> {}
+                else -> offerUpdate(o)
+            }
+        }
+    }
+
+    private fun offerUpdate(o: JSONObject) {
+        val v = o.optString("version")
+        val notes = o.optString("notes")
+        AlertDialog.Builder(this)
+            .setTitle("Comic Scraper $v is out")
+            .setMessage("You have version $appVersion." + (if (notes.isNotEmpty()) "\n\n$notes" else ""))
+            .setPositiveButton("Update now") { _, _ -> downloadUpdate(o) }
+            .setNegativeButton("Later", null)
+            .setNeutralButton("Skip this version") { _, _ -> prefs.edit().putString("update_skip", v).apply() }
+            .show()
+    }
+
+    private fun downloadUpdate(o: JSONObject) {
+        val url = o.optString("apk")
+        if (url.isEmpty()) {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(o.optString("page"))))
+            return
+        }
+        if (busy) {
+            toast("Finish or stop the current job first, then update.")
+            return
+        }
+        val v = o.optString("version")
+        val name = "ComicScraper-$v.apk"
+        getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.let { File(it, name).delete() }
+        val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val request = DownloadManager.Request(Uri.parse(url))
+            .setTitle("Comic Scraper $v")
+            .setMimeType("application/vnd.android.package-archive")
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
+            .setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, name)
+        val id = dm.enqueue(request)
+        appendLog("Downloading Comic Scraper $v...\n")
+        Thread {
+            var shown = -10
+            while (true) {
+                Thread.sleep(500)
+                var status = -1
+                var done = 0L
+                var total = 0L
+                dm.query(DownloadManager.Query().setFilterById(id))?.use { c ->
+                    if (c.moveToFirst()) {
+                        status = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                        done = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+                        total = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+                    }
+                }
+                if (total > 0) {
+                    val pct = (done * 100 / total).toInt()
+                    if (pct >= shown + 10) {
+                        shown = pct - pct % 10
+                        appendLog("   $shown%\n")
+                    }
+                }
+                if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                    main.post { installUpdate(id) }
+                    break
+                }
+                if (status == DownloadManager.STATUS_FAILED || status == -1) {
+                    appendLog("The update download failed. Try again later.\n")
+                    break
+                }
+            }
+        }.start()
+    }
+
+    private fun installUpdate(id: Long) {
+        if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+            pendingInstall = id
+            AlertDialog.Builder(this)
+                .setTitle("Allow updates")
+                .setMessage("To install the update, Android needs you to let Comic Scraper install apps. " +
+                    "On the next screen, turn on \"Allow from this source\", then come back.")
+                .setPositiveButton("OK") { _, _ ->
+                    startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+                }
+                .setNegativeButton("Cancel") { _, _ -> pendingInstall = -1L }
+                .show()
+            return
+        }
+        pendingInstall = -1L
+        val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val uri = dm.getUriForDownloadedFile(id)
+        if (uri == null) {
+            alert("The downloaded update is missing. Try again.")
+            return
+        }
+        appendLog("Opening the installer...\n")
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW)
+                .setDataAndType(uri, "application/vnd.android.package-archive")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e: Exception) {
+            alert("Couldn't open the installer: ${e.message}")
+        }
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()

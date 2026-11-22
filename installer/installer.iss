@@ -22,6 +22,9 @@ UninstallDisplayIcon={app}\{#AppName}.exe
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+; the in-app updater runs this installer silently: close the running app first
+CloseApplications=yes
+RestartApplications=no
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
@@ -35,3 +38,5 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppName}.exe"; Tasks: deskt
 
 [Run]
 Filename: "{app}\{#AppName}.exe"; Description: "Open {#AppName} now"; Flags: nowait postinstall skipifsilent
+; after an in-app update (a silent install), reopen the app by itself
+Filename: "{app}\{#AppName}.exe"; Flags: nowait skipifnotsilent

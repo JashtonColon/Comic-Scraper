@@ -629,3 +629,15 @@ def search_pick(index):
     print(f"\nPicked {r['title']} ({r['source']}). Set the issue numbers (or tick 'Get every issue'), "
           "then tap Start.")
     return json.dumps({"url": r["url"], "name": RL.safe_filename(r["title"])})
+
+
+# ---------------------------------------------------------------- updates
+def update_check(current):
+    """JSON: {"version", "notes", "apk", "page"} when a newer release exists, {} when up to date,
+    or {"error": "..."} when GitHub couldn't be reached."""
+    import updater
+    try:
+        rel = updater.check(current)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+    return json.dumps(rel or {})

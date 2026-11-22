@@ -14,6 +14,7 @@ import readinglist
 import mangadex
 import weebcentral
 import search
+import updater
 
 APP_NAME = "Comic Scraper"
 FROZEN = getattr(sys, "frozen", False)          # True when running as the installed .exe
@@ -42,6 +43,8 @@ DEFAULTS = {
     "files_per_folder": "100",   # split big downloads into subfolders of this many files; 0 = never
     "search_query": "",
     "search_sites": "Batcave,MangaDex,WeebCentral",
+    "update_check": "1",         # look for a new version when the app starts
+    "update_skip": "",           # a version you said to skip
 }
 
 INSTALLER_APP_ID = "{6B1E3F2A-8C4D-4E7B-9A51-2F0C7D9E4B13}"   # same AppId as installer/installer.iss
@@ -150,6 +153,8 @@ class App(tk.Tk):
                 self._show_plan(saved)
         self.after(100, self._drain_log)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        if self.vars["update_check"].get() == "1":
+            self.after(3000, lambda: threading.Thread(target=self._auto_update_check, daemon=True).start())
 
     # =================================================================
     #  layout
@@ -826,10 +831,97 @@ class App(tk.Tk):
         ttk.Label(per, text='Big downloads go in subfolders like "001-100", "101-200" so folders open fast. '
                             '0 = one folder', foreground="gray").pack(side="left", padx=(8, 0))
 
+        ttk.Label(f, text="Updates").grid(row=5, column=0, sticky="w", padx=6, pady=6)
+        upd = ttk.Frame(f)
+        upd.grid(row=5, column=1, sticky="w", padx=6)
+        ttk.Checkbutton(upd, text="Check for a new version when the app starts", variable=self.vars["update_check"],
+                        onvalue="1", offvalue="0").pack(side="left")
+        ttk.Button(upd, text="Check now", command=self._check_updates_now).pack(side="left", padx=(12, 0))
+
         def done():
             save_settings(self._collect())
             win.destroy()
-        ttk.Button(f, text="Save", command=done).grid(row=5, column=2, sticky="e", padx=6, pady=(10, 0))
+        ttk.Button(f, text="Save", command=done).grid(row=6, column=2, sticky="e", padx=6, pady=(10, 0))
+
+    # =================================================================
+    #  updates
+    # =================================================================
+    def _auto_update_check(self):
+        """Quietly look for a new version (in the background, when the app starts)."""
+        try:
+            rel = updater.check(APP_VERSION)
+        except Exception:
+            return                                   # offline or GitHub busy: try next time
+        if rel and rel["version"] != self.vars["update_skip"].get():
+            self.on_ui(lambda: self._offer_update(rel))
+
+    def _check_updates_now(self):
+        def work():
+            try:
+                rel = updater.check(APP_VERSION)
+            except Exception as e:
+                msg = f"Couldn't check for updates: {e}"
+                self.on_ui(lambda: messagebox.showwarning(APP_NAME, msg))
+                return
+            if rel:
+                self.on_ui(lambda: self._offer_update(rel))
+            else:
+                self.on_ui(lambda: messagebox.showinfo(APP_NAME, f"You have the latest version ({APP_VERSION})."))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _offer_update(self, rel):
+        win = tk.Toplevel(self)
+        win.title("Update available")
+        win.transient(self)
+        f = ttk.Frame(win, padding=14)
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text=f"Comic Scraper {rel['version']} is out", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        ttk.Label(f, text=f"You have version {APP_VERSION}.").pack(anchor="w", pady=(2, 8))
+        if rel["notes"]:
+            notes = tk.Text(f, height=8, width=70, wrap="word")
+            notes.insert("1.0", rel["notes"])
+            notes.config(state="disabled")
+            notes.pack(fill="both", expand=True, pady=(0, 8))
+        btns = ttk.Frame(f)
+        btns.pack(fill="x")
+
+        def now():
+            win.destroy()
+            self._install_update(rel)
+
+        def skip():
+            self.vars["update_skip"].set(rel["version"])
+            save_settings(self._collect())
+            win.destroy()
+        ttk.Button(btns, text="Update now", command=now).pack(side="left")
+        ttk.Button(btns, text="Later", command=win.destroy).pack(side="left", padx=6)
+        ttk.Button(btns, text="Skip this version", command=skip).pack(side="right")
+
+    def _install_update(self, rel):
+        if not FROZEN:
+            messagebox.showinfo(APP_NAME, "You're running Comic Scraper from its code, so update it with:\n\n"
+                                          "git pull")
+            return
+        if not rel["exe"]:
+            import webbrowser
+            webbrowser.open(rel["page"])
+            return
+        if self.worker:
+            messagebox.showinfo(APP_NAME, "Finish or stop the current job first, then update.")
+            return
+
+        def job():
+            import subprocess
+            import tempfile
+            print(f"Downloading Comic Scraper {rel['version']}...")
+            path = os.path.join(tempfile.gettempdir(), f"ComicScraper-Setup-{rel['version']}.exe")
+            updater.download(rel["exe"], path, progress=lambda pct: print(f"   {pct}%"))
+            print("Installing... Comic Scraper closes now and reopens by itself in a few seconds.")
+            flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            subprocess.Popen([path, "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"],
+                             creationflags=flags, close_fds=True)
+            self.on_ui(lambda: self.after(1500, self._on_close))
+        self._run(job)
 
     def _on_close(self):
         save_settings(self._collect())
